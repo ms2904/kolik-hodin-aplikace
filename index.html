@@ -1,0 +1,2772 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#15181F" />
+<title>Kolik hodin?</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="mobile-web-app-capable" content="yes" />
+<style>
+  html, body, #root { margin:0; padding:0; min-height:100vh; background:#15181F; }
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  window.storage = {
+    get: async (key) => {
+      const v = localStorage.getItem(key);
+      if (v === null) throw new Error("not found");
+      return { key, value: v, shared: false };
+    },
+    set: async (key, value) => {
+      localStorage.setItem(key, value);
+      return { key, value, shared: false };
+    },
+    delete: async (key) => {
+      localStorage.removeItem(key);
+      return { key, deleted: true, shared: false };
+    },
+    list: async (prefix) => {
+      const keys = Object.keys(localStorage).filter((k) => !prefix || k.startsWith(prefix));
+      return { keys, prefix, shared: false };
+    },
+  };
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+  const { useState, useEffect, useRef, useMemo } = React;
+
+
+const FONT_ID = "wh-fonts";
+const TESS_ID = "wh-tesseract";
+const DAY = 24 * 60 * 60 * 1000;
+const WORKDAY_HOURS = 8;
+
+function ensureFonts() {
+  if (typeof document === "undefined" || document.getElementById(FONT_ID)) return;
+  const link = document.createElement("link");
+  link.id = FONT_ID;
+  link.rel = "stylesheet";
+  link.href =
+    "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap";
+  document.head.appendChild(link);
+}
+
+function loadTesseract() {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) return resolve();
+    if (document.getElementById(TESS_ID)) {
+      document.getElementById(TESS_ID).addEventListener("load", () => resolve());
+      return;
+    }
+    const s = document.createElement("script");
+    s.id = TESS_ID;
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("load failed"));
+    document.head.appendChild(s);
+  });
+}
+
+const CURRENCIES = {
+  CZK: { symbol: "Kč", locale: "cs-CZ" },
+  EUR: { symbol: "€", locale: "de-DE" },
+  PLN: { symbol: "zł", locale: "pl-PL" },
+};
+
+const LOCALES = { cs: "cs-CZ", en: "en-GB", pl: "pl-PL", es: "es-ES" };
+
+const THEMES = {
+  "ink-dark": {
+    name: "Ink & Brass — Dark",
+    bg: "#15181F",
+    card: "#242938",
+    cardAlt: "#1D222E",
+    text: "#F2ECDD",
+    subtext: "#9DA3B6",
+    border: "#3C4459",
+    ticket: "#0E1119",
+    accent: "#C7A468",
+    accentBg: "#3A311F",
+    sage: "#9CA6BA",
+    sageBg: "#2A3040",
+    think: "#6A7C9C",
+    thinkBg: "#262D3D",
+    decline: "#BA7062",
+    declineBg: "#3F2822",
+    fillText: "#12151E",
+  },
+  "ink-light": {
+    name: "Ink & Brass — Light",
+    bg: "#FFFFFF",
+    card: "#FFFFFF",
+    cardAlt: "#F3F1EA",
+    text: "#1B1F2E",
+    subtext: "#585D70",
+    border: "#DCD6C8",
+    ticket: "#1B1F2A",
+    accent: "#96712F",
+    accentBg: "#F1E4CC",
+    sage: "#535D74",
+    sageBg: "#E7E9ED",
+    think: "#33415C",
+    thinkBg: "#E7EAF1",
+    decline: "#7E3B31",
+    declineBg: "#F4E3DE",
+    fillText: "#FFFFFF",
+  },
+  "blush-gold": {
+    name: "Blush & Gold",
+    bg: "#F9EDE9",
+    card: "#FFFFFF",
+    cardAlt: "#F5E4E0",
+    text: "#3B232A",
+    subtext: "#82616B",
+    border: "#E4CAC5",
+    ticket: "#5C2A3A",
+    accent: "#AC4468",
+    accentBg: "#F5DCE3",
+    sage: "#856A72",
+    sageBg: "#F0E6E4",
+    think: "#775D45",
+    thinkBg: "#EFE6DC",
+    decline: "#6B3445",
+    declineBg: "#F1DEE6",
+    fillText: "#FFFFFF",
+  },
+};
+
+function shade(hex, percent) {
+  const num = parseInt(hex.replace("#", ""), 16);
+  let r = (num >> 16) + Math.round((255 * percent) / 100);
+  let g = ((num >> 8) & 0x00ff) + Math.round((255 * percent) / 100);
+  let b = (num & 0x0000ff) + Math.round((255 * percent) / 100);
+  r = Math.max(Math.min(255, r), 0);
+  g = Math.max(Math.min(255, g), 0);
+  b = Math.max(Math.min(255, b), 0);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+function GlobalStyles() {
+  return (
+    <style>{`
+      button { transition: transform 0.08s ease, opacity 0.08s ease, box-shadow 0.15s ease; }
+      button:active:not(:disabled) { transform: scale(0.96); opacity: 0.85; }
+      input, textarea { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+      @keyframes wh-fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      .wh-tabpanel { animation: wh-fadein 0.22s ease; }
+      @keyframes wh-pulse { 0%,80%,100% { opacity: 0.25; transform: scale(0.85); } 40% { opacity: 1; transform: scale(1); } }
+      @keyframes wh-coin-fall {
+        0%   { transform: translateY(-11px) scale(0.7); opacity: 0; }
+        12%  { opacity: 1; }
+        48%  { transform: translateY(0px) scale(1); opacity: 1; }
+        88%  { transform: translateY(9px) scale(0.85); opacity: 1; }
+        100% { transform: translateY(10px) scale(0.7); opacity: 0; }
+      }
+      .wh-coin { animation: wh-coin-fall 1.4s cubic-bezier(0.55,0,0.85,0.35) infinite; transform-box: fill-box; transform-origin: center; }
+    `}</style>
+  );
+}
+
+function getTheme(name) {
+  return THEMES[name] || THEMES["ink-dark"];
+}
+
+const ICON_CHOICES = [
+  "🍽️", "☕", "🍕", "🍔", "🍷", "👕", "👗", "👟", "👜", "💄", "💅", "💻", "📱", "🎧", "📷",
+  "🏠", "🛋️", "🪴", "🧹", "🎬", "🎮", "🎵", "🎨", "📚", "🎟️", "🚗", "⛽", "🚲", "✈️", "🏨",
+  "🛍️", "🎁", "💊", "🏋️", "⚽", "🐾", "🔧", "💡", "📦", "💼", "👶", "🧸", "🎓", "💳", "🍿",
+];
+
+const DEFAULT_CATEGORIES = [
+  { id: "jidlo", icon: "🍽️" },
+  { id: "obleceni", icon: "👕" },
+  { id: "elektronika", icon: "💻" },
+  { id: "krasa", icon: "💄" },
+  { id: "domacnost", icon: "🏠" },
+  { id: "zabava", icon: "🎬" },
+  { id: "doprava", icon: "🚗" },
+  { id: "cestovani", icon: "✈️" },
+  { id: "ostatni", icon: "🛍️" },
+];
+
+const CAT_LABELS = {
+  cs: { jidlo: "Jídlo a pití", obleceni: "Oblečení", elektronika: "Elektronika", krasa: "Krása a péče", domacnost: "Domácnost", zabava: "Zábava", doprava: "Doprava", cestovani: "Cestování", ostatni: "Ostatní" },
+  en: { jidlo: "Food & drink", obleceni: "Clothing", elektronika: "Electronics", krasa: "Beauty & care", domacnost: "Home", zabava: "Entertainment", doprava: "Transport", cestovani: "Travel", ostatni: "Other" },
+  pl: { jidlo: "Jedzenie i picie", obleceni: "Ubrania", elektronika: "Elektronika", krasa: "Uroda i pielęgnacja", domacnost: "Dom", zabava: "Rozrywka", doprava: "Transport", cestovani: "Podróże", ostatni: "Inne" },
+  es: { jidlo: "Comida y bebida", obleceni: "Ropa", elektronika: "Electrónica", krasa: "Belleza y cuidado", domacnost: "Hogar", zabava: "Ocio", doprava: "Transporte", cestovani: "Viajes", ostatni: "Otros" },
+};
+
+const STR = {
+  cs: {
+    appTitle: "Kolik hodin?",
+    onboardDesc: "Než začneme, řekni mi svou hodinovou sazbu. Podle ní ti budu přepočítávat ceny na hodiny práce.",
+    currency: "Měna",
+    currencyChangeWarning: "Změna měny nepřevede stávající sazbu ani uložené částky — uprav si prosím sazbu ručně, pokud je potřeba.",
+    netRate: "Čistá hodinová sazba",
+    continue: "Pokračovat",
+    category: "Kategorie",
+    optionalLabel: "(volitelné)",
+    price: "Cena",
+    scan: "Naskenovat cenu",
+    scanning: "Rozpoznávám cenu…",
+    scanFound: "Rozpoznaná cena — zkontroluj, prosím, jestli sedí.",
+    scanNotFound: "Cenu se nepodařilo rozpoznat, zadej ji ručně.",
+    scanFailed: "Skenování se nezdařilo, zadej cenu ručně.",
+    atRate: "při sazbě",
+    worthIt: "Stojí to za to",
+    thinkAboutIt: "Promyslím si to",
+    notBuying: "Nekoupím",
+    back: "Zpět",
+    thinkPrompt: "Na jak dlouho si to necháš uležet?",
+    think30: "30 minut",
+    think24h: "24 hodin",
+    think3d: "3 dny",
+    pending: "Přemýšlím",
+    timeUp: "čas vypršel",
+    willBuy: "Koupím",
+    followupTitle: "Ještě tě to těší?",
+    boughtDaysAgo: "koupeno před pár dny",
+    gladYes: "Ano, těší",
+    gladNo: "Mrzí mě to",
+    savedMonth: "Za posledních 30 dní",
+    exportJSON: "Export JSON",
+    exportCSV: "Export CSV",
+    history: "Historie",
+    decNotBuying: "nekoupeno",
+    decWorthIt: "stálo za to",
+    decBought: "koupeno",
+    subsCostMonth: "Předplatné tě stojí měsíčně",
+    name: "Název",
+    namePlaceholder: "např. Netflix",
+    cycle: "Cyklus",
+    monthly: "měsíčně",
+    yearly: "ročně",
+    perMonth: "/měsíc",
+    perYear: "/rok",
+    addSub: "Přidat předplatné",
+    appearance: "Vzhled",
+    selected: "vybráno",
+    language: "Jazyk",
+    hourlyRates: "Hodinové sazby",
+    active: "aktivní",
+    rateNamePlaceholder: "Název, např. Freelance",
+    ratePlaceholder: "sazba",
+    addRate: "+ Přidat sazbu",
+    categories: "Kategorie",
+    categoryDeleteNote: "Smazání kategorie nezmění historii — staré položky se přeřadí pod poslední kategorii v seznamu.",
+    newCategory: "Nová kategorie",
+    add: "Přidat",
+    notifications: "Upozornění",
+    notifDesc: "Fungují jen když je appka otevřená nebo běží na pozadí v prohlížeči — ne po úplném zavření.",
+    notifGranted: "✓ Povoleno",
+    notifUnsupported: "Nejsou podporována v tomto prostředí.",
+    notifRequest: "Povolit upozornění",
+    fullBackupHint: "Kompletní zálohu všech dat najdeš v Nastavení → Záloha.",
+    saveError: "Ukládání se teď nezdařilo, data zůstávají jen v této relaci.",
+    navHome: "Kalkulačka",
+    navStats: "Přehled",
+    navRecurring: "Předplatné",
+    navSettings: "Nastavení",
+    hUnit1: "hodina",
+    hUnit2: "hodiny",
+    hUnit5: "hodin",
+    min: "min",
+    backup: "Záloha",
+    backupDesc: "Stáhni si zálohu všech dat a na jiném zařízení ji nahraj zpět — ušetříš si opětovné vyplňování.",
+    backupExport: "Stáhnout zálohu",
+    backupImport: "Obnovit ze zálohy",
+    backupImportSuccess: "Data byla úspěšně obnovena.",
+    backupImportError: "Soubor se nepodařilo načíst. Zkontroluj, že jde o zálohu z této appky.",
+    mainRateLabel: "Hlavní sazba",
+    streakCurrent: "Dní bez nákupu",
+    streakLongest: "Nejdelší série",
+    daysUnit: "dní",
+    lastTimeNone: "",
+    lastTimePrefix: "Naposledy v této kategorii:",
+    lastTimeGlad: "líbilo se 🙂",
+    lastTimeRegret: "mrzelo tě to 😕",
+    undo: "↩ Vrátit poslední rozhodnutí",
+    deleteEntry: "Smazat",
+    tapAgainToDelete: "Klepni znovu",
+    share: "Sdílet",
+    shareFailed: "Sdílení se nezdařilo, obrázek se stáhl místo toho.",
+    convertingRate: "Zjišťuji kurz…",
+    conversionFailed: "Kurz se nepodařilo zjistit — zkus to prosím jen v nasazené appce s připojením.",
+    quickEntryHint: "Tip: appku můžeš otevřít rovnou s předvyplněnou položkou přes odkaz ve tvaru ?cat=jidlo&price=200 — ulož si takový odkaz do záložek pro bleskové zadání.",
+    walkthroughTip: "👋 Tip: vlevo najdeš Přehled, Předplatné a Nastavení.",
+    gotIt: "Rozumím",
+    unitMinutes: "Minuty",
+    unitHours: "Hodiny",
+    unitDays: "Prac. dny",
+    dayUnit1: "pracovní den",
+    dayUnit2: "pracovní dny",
+    dayUnit5: "pracovních dní",
+    resetApp: "Resetovat aplikaci",
+    resetDesc: "Smaže veškerá data a appku vrátí na úvodní obrazovku.",
+    resetConfirm: "Opravdu smazat vše?",
+    resetCancel: "Zrušit",
+    priceHelperToggle: "Nevíš cenu? Najdi ji",
+    moreOptions: "Další možnosti",
+    priceInOtherCurrency: "Cena je v jiné měně",
+    convertFirstHint: "Nejdřív převeď měnu tlačítkem výše, ať vidíš správný výsledek.",
+    itemQueryPlaceholder: "co hledáš, např. sluchátka Sony WH-1000XM5",
+    searchOnline: "🔎 Hledat ceny online",
+    customTime: "Vlastní čas",
+    customTimeError: "Zvol čas v budoucnosti.",
+    start: "Spustit",
+    achievements: "Odznaky",
+    achievementUnlockedToast: "Nový odznak!",
+    achFirstCalcTitle: "První výpočet",
+    achFirstCalcDesc: "Poprvé jsi přepočítal/a cenu na hodiny.",
+    achTenDecisionsTitle: "10 rozhodnutí",
+    achTenDecisionsDesc: "Zaznamenal/a jsi 10 rozhodnutí, ať už jakýchkoliv.",
+    achFiftyDecisionsTitle: "50 rozhodnutí",
+    achFiftyDecisionsDesc: "Zaznamenal/a jsi 50 rozhodnutí.",
+    achDaysUsedTitle: "Týden v akci",
+    achDaysUsedDesc: "Používal/a jsi appku alespoň 7 různých dní.",
+    achThinkStartedTitle: "První pauza",
+    achThinkStartedDesc: "Poprvé jsi využil/a „Promyslím si to“.",
+    achThinkResolvedTitle: "Dotažené do konce",
+    achThinkResolvedDesc: "Vrátil/a ses k rozmyšlené položce a rozhodl/a se.",
+    achFollowupAnyTitle: "Upřímná zpětná vazba",
+    achFollowupAnyDesc: "Odpověděl/a jsi na dotaz, jestli tě nákup ještě těší.",
+    achFollowupRegretTitle: "Upřímnost k sobě",
+    achFollowupRegretDesc: "Přiznal/a sis, že jednoho nákupu lituješ. To je taky důležité vědět.",
+    achBalancedTitle: "Vyvážený přístup",
+    achBalancedDesc: "Máš v historii zdravý mix nákupů i odmítnutí.",
+    achBigCallTitle: "Velké rozhodnutí",
+    achBigCallDesc: "Přepočítal/a jsi položku za víc než celý pracovní den.",
+    achCategoryRangeTitle: "Široký záběr",
+    achCategoryRangeDesc: "Použil/a jsi aspoň 5 různých kategorií.",
+    spentLabel: "Utraceno",
+    notSpentLabel: "Neutraceno",
+    historySection: "Historie a export",
+    whatIfTitle: "Co kdyby sis to investoval/a?",
+    whatIfDisclaimer: "Ilustrační odhad, ne finanční poradenství. Skutečné výnosy se liší a mohou být i záporné.",
+    whatIfCurrentLabel: "Neutracená částka",
+    whatIfProjectedLabel: "by mohlo být přibližně",
+    rateConservativeLabel: "Spořicí účet",
+    rateModerateLabel: "Akciový trh",
+    rateAggressiveLabel: "Agresivní",
+    yearsUnit: "let",
+  },
+  en: {
+    appTitle: "How many hours?",
+    onboardDesc: "Before we start, tell me your hourly rate. I'll use it to convert prices into hours of work.",
+    currency: "Currency",
+    currencyChangeWarning: "Switching currency doesn't convert your existing rate or saved amounts — update your rate manually if needed.",
+    netRate: "Net hourly rate",
+    continue: "Continue",
+    category: "Category",
+    optionalLabel: "(optional)",
+    price: "Price",
+    scan: "Scan price",
+    scanning: "Recognizing price…",
+    scanFound: "Price recognized — please double check it's right.",
+    scanNotFound: "Couldn't recognize a price, enter it manually.",
+    scanFailed: "Scan failed, enter the price manually.",
+    atRate: "at rate",
+    worthIt: "Worth it",
+    thinkAboutIt: "I'll think about it",
+    notBuying: "Not buying",
+    back: "Back",
+    thinkPrompt: "How long do you want to sit on it?",
+    think30: "30 minutes",
+    think24h: "24 hours",
+    think3d: "3 days",
+    pending: "Thinking it over",
+    timeUp: "time's up",
+    willBuy: "I'll buy it",
+    followupTitle: "Still glad you got it?",
+    boughtDaysAgo: "bought a few days ago",
+    gladYes: "Yes, glad",
+    gladNo: "I regret it",
+    savedMonth: "Last 30 days",
+    exportJSON: "Export JSON",
+    exportCSV: "Export CSV",
+    history: "History",
+    decNotBuying: "skipped",
+    decWorthIt: "worth it",
+    decBought: "bought",
+    subsCostMonth: "Subscriptions cost you monthly",
+    name: "Name",
+    namePlaceholder: "e.g. Netflix",
+    cycle: "Cycle",
+    monthly: "monthly",
+    yearly: "yearly",
+    perMonth: "/month",
+    perYear: "/year",
+    addSub: "Add subscription",
+    appearance: "Appearance",
+    selected: "selected",
+    language: "Language",
+    hourlyRates: "Hourly rates",
+    active: "active",
+    rateNamePlaceholder: "Name, e.g. Freelance",
+    ratePlaceholder: "rate",
+    addRate: "+ Add rate",
+    categories: "Categories",
+    categoryDeleteNote: "Deleting a category doesn't change history — old entries move under the last category in the list.",
+    newCategory: "New category",
+    add: "Add",
+    notifications: "Notifications",
+    notifDesc: "Only work while the app is open or backgrounded in the browser — not after it's fully closed.",
+    notifGranted: "✓ Enabled",
+    notifUnsupported: "Not supported in this environment.",
+    notifRequest: "Enable notifications",
+    fullBackupHint: "A full backup of everything lives in Settings → Backup.",
+    saveError: "Saving failed just now, data will only last this session.",
+    navHome: "Calculator",
+    navStats: "Stats",
+    navRecurring: "Subscriptions",
+    navSettings: "Settings",
+    hUnit1: "hr",
+    hUnit2: "hr",
+    hUnit5: "hr",
+    min: "min",
+    backup: "Backup",
+    backupDesc: "Download a backup of all your data, then upload it back on another device — no need to re-enter everything.",
+    backupExport: "Download backup",
+    backupImport: "Restore from backup",
+    backupImportSuccess: "Data restored successfully.",
+    backupImportError: "Couldn't read the file. Make sure it's a backup from this app.",
+    mainRateLabel: "Main rate",
+    streakCurrent: "Days without buying",
+    streakLongest: "Longest streak",
+    daysUnit: "days",
+    lastTimeNone: "",
+    lastTimePrefix: "Last time in this category:",
+    lastTimeGlad: "glad about it 🙂",
+    lastTimeRegret: "regretted it 😕",
+    undo: "↩ Undo last decision",
+    deleteEntry: "Delete",
+    tapAgainToDelete: "Tap again",
+    share: "Share",
+    shareFailed: "Sharing failed, downloaded the image instead.",
+    convertingRate: "Fetching exchange rate…",
+    conversionFailed: "Couldn't fetch the rate — try this once the app is actually deployed and online.",
+    quickEntryHint: "Tip: you can open the app pre-filled via a link like ?cat=jidlo&price=200 — bookmark one for instant logging.",
+    walkthroughTip: "👋 Tip: Stats, Subscriptions and Settings are on the left.",
+    gotIt: "Got it",
+    unitMinutes: "Minutes",
+    unitHours: "Hours",
+    unitDays: "Workdays",
+    dayUnit1: "workday",
+    dayUnit2: "workdays",
+    dayUnit5: "workdays",
+    resetApp: "Reset app",
+    resetDesc: "Deletes all data and takes you back to the start screen.",
+    resetConfirm: "Really delete everything?",
+    resetCancel: "Cancel",
+    priceHelperToggle: "Don't know the price? Find it",
+    moreOptions: "More options",
+    priceInOtherCurrency: "Price is in another currency",
+    convertFirstHint: "Convert the currency with the button above first to see the correct result.",
+    itemQueryPlaceholder: "what you're looking for, e.g. Sony WH-1000XM5 headphones",
+    searchOnline: "🔎 Search prices online",
+    customTime: "Custom time",
+    customTimeError: "Pick a time in the future.",
+    start: "Start",
+    achievements: "Achievements",
+    achievementUnlockedToast: "New achievement!",
+    achFirstCalcTitle: "First calculation",
+    achFirstCalcDesc: "You converted a price into hours for the first time.",
+    achTenDecisionsTitle: "10 decisions",
+    achTenDecisionsDesc: "You've logged 10 decisions, of any kind.",
+    achFiftyDecisionsTitle: "50 decisions",
+    achFiftyDecisionsDesc: "You've logged 50 decisions.",
+    achDaysUsedTitle: "Week in action",
+    achDaysUsedDesc: "You've used the app on at least 7 different days.",
+    achThinkStartedTitle: "First pause",
+    achThinkStartedDesc: "You used \"I'll think about it\" for the first time.",
+    achThinkResolvedTitle: "Followed through",
+    achThinkResolvedDesc: "You came back to a thought-over item and made the call.",
+    achFollowupAnyTitle: "Honest feedback",
+    achFollowupAnyDesc: "You answered whether a purchase still felt worth it.",
+    achFollowupRegretTitle: "Honest with yourself",
+    achFollowupRegretDesc: "You admitted you regret a purchase. That's worth knowing too.",
+    achBalancedTitle: "Balanced approach",
+    achBalancedDesc: "Your history shows a real mix of buys and declines.",
+    achBigCallTitle: "Big call",
+    achBigCallDesc: "You calculated something worth more than a full workday.",
+    achCategoryRangeTitle: "Wide range",
+    achCategoryRangeDesc: "You've used at least 5 different categories.",
+    spentLabel: "Spent",
+    notSpentLabel: "Not spent",
+    historySection: "History & export",
+    whatIfTitle: "What if you invested it?",
+    whatIfDisclaimer: "An illustrative estimate, not financial advice. Real returns vary and can be negative.",
+    whatIfCurrentLabel: "Amount not spent",
+    whatIfProjectedLabel: "could become roughly",
+    rateConservativeLabel: "Savings account",
+    rateModerateLabel: "Stock market",
+    rateAggressiveLabel: "Aggressive",
+    yearsUnit: "years",
+  },
+  pl: {
+    appTitle: "Ile godzin?",
+    onboardDesc: "Zanim zaczniemy, podaj swoją stawkę godzinową. Na jej podstawie przeliczę ceny na godziny pracy.",
+    currency: "Waluta",
+    currencyChangeWarning: "Zmiana waluty nie przelicza istniejącej stawki ani zapisanych kwot — w razie potrzeby zaktualizuj stawkę ręcznie.",
+    netRate: "Stawka godzinowa netto",
+    continue: "Dalej",
+    category: "Kategoria",
+    optionalLabel: "(opcjonalnie)",
+    price: "Cena",
+    scan: "Zeskanuj cenę",
+    scanning: "Rozpoznaję cenę…",
+    scanFound: "Rozpoznano cenę — sprawdź, czy się zgadza.",
+    scanNotFound: "Nie udało się rozpoznać ceny, wpisz ją ręcznie.",
+    scanFailed: "Skanowanie nieudane, wpisz cenę ręcznie.",
+    atRate: "przy stawce",
+    worthIt: "Warto",
+    thinkAboutIt: "Zastanowię się",
+    notBuying: "Nie kupuję",
+    back: "Wstecz",
+    thinkPrompt: "Na jak długo chcesz to przemyśleć?",
+    think30: "30 minut",
+    think24h: "24 godziny",
+    think3d: "3 dni",
+    pending: "Zastanawiam się",
+    timeUp: "czas minął",
+    willBuy: "Kupię",
+    followupTitle: "Nadal się z tego cieszysz?",
+    boughtDaysAgo: "kupione kilka dni temu",
+    gladYes: "Tak, cieszę się",
+    gladNo: "Żałuję",
+    savedMonth: "Ostatnie 30 dni",
+    exportJSON: "Eksport JSON",
+    exportCSV: "Eksport CSV",
+    history: "Historia",
+    decNotBuying: "niekupione",
+    decWorthIt: "warto było",
+    decBought: "kupione",
+    subsCostMonth: "Subskrypcje kosztują cię miesięcznie",
+    name: "Nazwa",
+    namePlaceholder: "np. Netflix",
+    cycle: "Cykl",
+    monthly: "miesięcznie",
+    yearly: "rocznie",
+    perMonth: "/miesiąc",
+    perYear: "/rok",
+    addSub: "Dodaj subskrypcję",
+    appearance: "Wygląd",
+    selected: "wybrano",
+    language: "Język",
+    hourlyRates: "Stawki godzinowe",
+    active: "aktywna",
+    rateNamePlaceholder: "Nazwa, np. Freelance",
+    ratePlaceholder: "stawka",
+    addRate: "+ Dodaj stawkę",
+    categories: "Kategorie",
+    categoryDeleteNote: "Usunięcie kategorii nie zmienia historii — stare pozycje przechodzą pod ostatnią kategorię na liście.",
+    newCategory: "Nowa kategoria",
+    add: "Dodaj",
+    notifications: "Powiadomienia",
+    notifDesc: "Działają tylko gdy aplikacja jest otwarta lub w tle w przeglądarce — nie po jej całkowitym zamknięciu.",
+    notifGranted: "✓ Włączone",
+    notifUnsupported: "Niedostępne w tym środowisku.",
+    notifRequest: "Włącz powiadomienia",
+    fullBackupHint: "Pełna kopia zapasowa wszystkiego jest w Ustawienia → Kopia zapasowa.",
+    saveError: "Zapis się nie powiódł, dane zostaną tylko na tę sesję.",
+    navHome: "Kalkulator",
+    navStats: "Statystyki",
+    navRecurring: "Subskrypcje",
+    navSettings: "Ustawienia",
+    hUnit1: "godz.",
+    hUnit2: "godz.",
+    hUnit5: "godz.",
+    min: "min",
+    backup: "Kopia zapasowa",
+    backupDesc: "Pobierz kopię zapasową wszystkich danych i wgraj ją na innym urządzeniu — nie musisz wpisywać wszystkiego od nowa.",
+    backupExport: "Pobierz kopię zapasową",
+    backupImport: "Przywróć z kopii zapasowej",
+    backupImportSuccess: "Dane zostały pomyślnie przywrócone.",
+    backupImportError: "Nie udało się wczytać pliku. Upewnij się, że to kopia zapasowa z tej aplikacji.",
+    mainRateLabel: "Główna stawka",
+    streakCurrent: "Dni bez zakupu",
+    streakLongest: "Najdłuższa seria",
+    daysUnit: "dni",
+    lastTimeNone: "",
+    lastTimePrefix: "Ostatnio w tej kategorii:",
+    lastTimeGlad: "zadowolenie 🙂",
+    lastTimeRegret: "żal 😕",
+    undo: "↩ Cofnij ostatnią decyzję",
+    deleteEntry: "Usuń",
+    tapAgainToDelete: "Stuknij ponownie",
+    share: "Udostępnij",
+    shareFailed: "Udostępnianie nieudane, pobrano obraz zamiast tego.",
+    convertingRate: "Sprawdzam kurs…",
+    conversionFailed: "Nie udało się sprawdzić kursu — spróbuj w wdrożonej aplikacji z połączeniem.",
+    quickEntryHint: "Wskazówka: możesz otworzyć aplikację od razu z wypełnioną pozycją przez link typu ?cat=jidlo&price=200 — zapisz taki link w zakładkach.",
+    walkthroughTip: "👋 Wskazówka: Statystyki, Subskrypcje i Ustawienia są po lewej.",
+    gotIt: "Rozumiem",
+    unitMinutes: "Minuty",
+    unitHours: "Godziny",
+    unitDays: "Dni robocze",
+    dayUnit1: "dzień roboczy",
+    dayUnit2: "dni robocze",
+    dayUnit5: "dni roboczych",
+    resetApp: "Zresetuj aplikację",
+    resetDesc: "Usuwa wszystkie dane i wraca do ekranu startowego.",
+    resetConfirm: "Na pewno usunąć wszystko?",
+    resetCancel: "Anuluj",
+    priceHelperToggle: "Nie znasz ceny? Znajdź ją",
+    moreOptions: "Więcej opcji",
+    priceInOtherCurrency: "Cena jest w innej walucie",
+    convertFirstHint: "Najpierw przelicz walutę przyciskiem powyżej, aby zobaczyć poprawny wynik.",
+    itemQueryPlaceholder: "czego szukasz, np. słuchawki Sony WH-1000XM5",
+    searchOnline: "🔎 Szukaj cen online",
+    customTime: "Własny czas",
+    customTimeError: "Wybierz czas w przyszłości.",
+    start: "Start",
+    achievements: "Odznaki",
+    achievementUnlockedToast: "Nowa odznaka!",
+    achFirstCalcTitle: "Pierwsze obliczenie",
+    achFirstCalcDesc: "Po raz pierwszy przeliczyłeś/aś cenę na godziny.",
+    achTenDecisionsTitle: "10 decyzji",
+    achTenDecisionsDesc: "Zapisałeś/aś 10 decyzji, dowolnego rodzaju.",
+    achFiftyDecisionsTitle: "50 decyzji",
+    achFiftyDecisionsDesc: "Zapisałeś/aś 50 decyzji.",
+    achDaysUsedTitle: "Tydzień w akcji",
+    achDaysUsedDesc: "Używałeś/aś aplikacji przez co najmniej 7 różnych dni.",
+    achThinkStartedTitle: "Pierwsza przerwa",
+    achThinkStartedDesc: "Po raz pierwszy użyłeś/aś „Zastanowię się”.",
+    achThinkResolvedTitle: "Dociągnięte do końca",
+    achThinkResolvedDesc: "Wróciłeś/aś do przemyślanej pozycji i podjąłeś/ęłaś decyzję.",
+    achFollowupAnyTitle: "Szczera informacja zwrotna",
+    achFollowupAnyDesc: "Odpowiedziałeś/aś, czy zakup nadal był tego wart.",
+    achFollowupRegretTitle: "Szczerość wobec siebie",
+    achFollowupRegretDesc: "Przyznałeś/aś, że żałujesz zakupu. To też warto wiedzieć.",
+    achBalancedTitle: "Zrównoważone podejście",
+    achBalancedDesc: "Twoja historia pokazuje prawdziwy mix zakupów i rezygnacji.",
+    achBigCallTitle: "Duża decyzja",
+    achBigCallDesc: "Przeliczyłeś/aś coś wartego więcej niż cały dzień pracy.",
+    achCategoryRangeTitle: "Szeroki zakres",
+    achCategoryRangeDesc: "Użyłeś/aś co najmniej 5 różnych kategorii.",
+    spentLabel: "Wydano",
+    notSpentLabel: "Niewydano",
+    historySection: "Historia i eksport",
+    whatIfTitle: "A gdybyś to zainwestował/a?",
+    whatIfDisclaimer: "Szacunek poglądowy, nie porada finansowa. Rzeczywiste zwroty są różne i mogą być ujemne.",
+    whatIfCurrentLabel: "Kwota niewydana",
+    whatIfProjectedLabel: "mogłoby być około",
+    rateConservativeLabel: "Konto oszczędnościowe",
+    rateModerateLabel: "Rynek akcji",
+    rateAggressiveLabel: "Agresywne",
+    yearsUnit: "lat",
+  },
+  es: {
+    appTitle: "¿Cuántas horas?",
+    onboardDesc: "Antes de empezar, dime tu tarifa por hora. La usaré para convertir precios en horas de trabajo.",
+    currency: "Moneda",
+    currencyChangeWarning: "Cambiar de moneda no convierte tu tarifa actual ni los importes guardados — actualiza tu tarifa manualmente si hace falta.",
+    netRate: "Tarifa neta por hora",
+    continue: "Continuar",
+    category: "Categoría",
+    optionalLabel: "(opcional)",
+    price: "Precio",
+    scan: "Escanear precio",
+    scanning: "Reconociendo el precio…",
+    scanFound: "Precio reconocido — comprueba que sea correcto.",
+    scanNotFound: "No se pudo reconocer el precio, introdúcelo manualmente.",
+    scanFailed: "El escaneo falló, introduce el precio manualmente.",
+    atRate: "a la tarifa de",
+    worthIt: "Vale la pena",
+    thinkAboutIt: "Lo pensaré",
+    notBuying: "No lo compro",
+    back: "Atrás",
+    thinkPrompt: "¿Cuánto tiempo quieres pensarlo?",
+    think30: "30 minutos",
+    think24h: "24 horas",
+    think3d: "3 días",
+    pending: "Pensándolo",
+    timeUp: "tiempo cumplido",
+    willBuy: "Lo compro",
+    followupTitle: "¿Sigues contento con la compra?",
+    boughtDaysAgo: "comprado hace unos días",
+    gladYes: "Sí, contento",
+    gladNo: "Me arrepiento",
+    savedMonth: "Últimos 30 días",
+    exportJSON: "Exportar JSON",
+    exportCSV: "Exportar CSV",
+    history: "Historial",
+    decNotBuying: "no comprado",
+    decWorthIt: "valió la pena",
+    decBought: "comprado",
+    subsCostMonth: "Las suscripciones te cuestan al mes",
+    name: "Nombre",
+    namePlaceholder: "p. ej. Netflix",
+    cycle: "Ciclo",
+    monthly: "mensual",
+    yearly: "anual",
+    perMonth: "/mes",
+    perYear: "/año",
+    addSub: "Añadir suscripción",
+    appearance: "Apariencia",
+    selected: "seleccionado",
+    language: "Idioma",
+    hourlyRates: "Tarifas por hora",
+    active: "activa",
+    rateNamePlaceholder: "Nombre, p. ej. Freelance",
+    ratePlaceholder: "tarifa",
+    addRate: "+ Añadir tarifa",
+    categories: "Categorías",
+    categoryDeleteNote: "Eliminar una categoría no cambia el historial — las entradas antiguas pasan a la última categoría de la lista.",
+    newCategory: "Nueva categoría",
+    add: "Añadir",
+    notifications: "Notificaciones",
+    notifDesc: "Solo funcionan mientras la app está abierta o en segundo plano en el navegador — no si la cierras del todo.",
+    notifGranted: "✓ Activadas",
+    notifUnsupported: "No compatibles en este entorno.",
+    notifRequest: "Activar notificaciones",
+    fullBackupHint: "Encontrarás una copia completa de todo en Ajustes → Copia de seguridad.",
+    saveError: "El guardado falló, los datos solo durarán esta sesión.",
+    navHome: "Calculadora",
+    navStats: "Resumen",
+    navRecurring: "Suscripciones",
+    navSettings: "Ajustes",
+    hUnit1: "h",
+    hUnit2: "h",
+    hUnit5: "h",
+    min: "min",
+    mainRateLabel: "Tarifa principal",
+    streakCurrent: "Días sin comprar",
+    streakLongest: "Racha más larga",
+    daysUnit: "días",
+    lastTimeNone: "",
+    lastTimePrefix: "La última vez en esta categoría:",
+    lastTimeGlad: "contento 🙂",
+    lastTimeRegret: "arrepentido 😕",
+    undo: "↩ Deshacer última decisión",
+    deleteEntry: "Eliminar",
+    tapAgainToDelete: "Toca de nuevo",
+    share: "Compartir",
+    shareFailed: "No se pudo compartir, se descargó la imagen en su lugar.",
+    convertingRate: "Consultando el tipo de cambio…",
+    conversionFailed: "No se pudo obtener el tipo de cambio — pruébalo en la app ya publicada con conexión.",
+    quickEntryHint: "Consejo: puedes abrir la app ya rellena con un enlace tipo ?cat=jidlo&price=200 — guárdalo en marcadores para registrar al instante.",
+    walkthroughTip: "👋 Consejo: Resumen, Suscripciones y Ajustes están a la izquierda.",
+    gotIt: "Entendido",
+    unitMinutes: "Minutos",
+    unitHours: "Horas",
+    unitDays: "Días lab.",
+    dayUnit1: "día laboral",
+    dayUnit2: "días laborales",
+    dayUnit5: "días laborales",
+    resetApp: "Restablecer app",
+    resetDesc: "Borra todos los datos y vuelve a la pantalla inicial.",
+    resetConfirm: "¿Seguro que quieres borrarlo todo?",
+    resetCancel: "Cancelar",
+    backup: "Copia de seguridad",
+    backupDesc: "Descarga una copia de todos tus datos y súbela en otro dispositivo — sin tener que volver a introducir nada.",
+    backupExport: "Descargar copia",
+    backupImport: "Restaurar copia",
+    backupImportSuccess: "Datos restaurados correctamente.",
+    backupImportError: "No se pudo leer el archivo. Asegúrate de que es una copia de esta app.",
+    priceHelperToggle: "¿No sabes el precio? Búscalo",
+    moreOptions: "Más opciones",
+    priceInOtherCurrency: "El precio está en otra moneda",
+    convertFirstHint: "Convierte la moneda con el botón de arriba primero para ver el resultado correcto.",
+    itemQueryPlaceholder: "qué buscas, p. ej. auriculares Sony WH-1000XM5",
+    searchOnline: "🔎 Buscar precios online",
+    customTime: "Tiempo personalizado",
+    customTimeError: "Elige una hora futura.",
+    start: "Iniciar",
+    achievements: "Logros",
+    achievementUnlockedToast: "¡Nuevo logro!",
+    achFirstCalcTitle: "Primer cálculo",
+    achFirstCalcDesc: "Convertiste un precio en horas por primera vez.",
+    achTenDecisionsTitle: "10 decisiones",
+    achTenDecisionsDesc: "Has registrado 10 decisiones, de cualquier tipo.",
+    achFiftyDecisionsTitle: "50 decisiones",
+    achFiftyDecisionsDesc: "Has registrado 50 decisiones.",
+    achDaysUsedTitle: "Semana en marcha",
+    achDaysUsedDesc: "Has usado la app en al menos 7 días distintos.",
+    achThinkStartedTitle: "Primera pausa",
+    achThinkStartedDesc: "Usaste \"Lo pensaré\" por primera vez.",
+    achThinkResolvedTitle: "Hasta el final",
+    achThinkResolvedDesc: "Volviste a algo que pensaste y tomaste la decisión.",
+    achFollowupAnyTitle: "Comentario honesto",
+    achFollowupAnyDesc: "Respondiste si una compra seguía valiendo la pena.",
+    achFollowupRegretTitle: "Honestidad contigo mismo/a",
+    achFollowupRegretDesc: "Admitiste que te arrepientes de una compra. Eso también vale la pena saberlo.",
+    achBalancedTitle: "Enfoque equilibrado",
+    achBalancedDesc: "Tu historial muestra una mezcla real de compras y rechazos.",
+    achBigCallTitle: "Gran decisión",
+    achBigCallDesc: "Calculaste algo que vale más que una jornada laboral completa.",
+    achCategoryRangeTitle: "Amplio alcance",
+    achCategoryRangeDesc: "Has usado al menos 5 categorías distintas.",
+    spentLabel: "Gastado",
+    notSpentLabel: "No gastado",
+    historySection: "Historial y exportación",
+    whatIfTitle: "¿Y si lo invirtieras?",
+    whatIfDisclaimer: "Una estimación ilustrativa, no es asesoramiento financiero. Los rendimientos reales varían y pueden ser negativos.",
+    whatIfCurrentLabel: "Importe no gastado",
+    whatIfProjectedLabel: "podría convertirse en aproximadamente",
+    rateConservativeLabel: "Cuenta de ahorro",
+    rateModerateLabel: "Mercado de valores",
+    rateAggressiveLabel: "Agresivo",
+    yearsUnit: "años",
+  },
+};
+
+function parseLocaleNumber(str) {
+  if (str === null || str === undefined) return NaN;
+  let s = String(str).trim();
+  if (!s) return NaN;
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+  if (hasComma && hasDot) {
+    // whichever separator appears last is the decimal separator
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
+      s = s.replace(/\./g, "").replace(",", ".");
+    } else {
+      s = s.replace(/,/g, "");
+    }
+  } else if (hasComma) {
+    const parts = s.split(",");
+    if (parts.length === 2 && parts[1].length <= 2) {
+      s = s.replace(",", "."); // single comma, 1-2 trailing digits -> decimal
+    } else {
+      s = s.replace(/,/g, ""); // multiple commas -> thousands separators
+    }
+  } else if (hasDot) {
+    const parts = s.split(".");
+    if (parts.length > 2) s = s.replace(/\./g, ""); // multiple dots -> thousands separators
+  }
+  return parseFloat(s);
+}
+
+function formatMoney(n, currency) {
+  const c = CURRENCIES[currency] || CURRENCIES.CZK;
+  return n.toLocaleString(c.locale, { maximumFractionDigits: 2 }) + " " + c.symbol;
+}
+
+function formatHours(hoursDecimal, lang) {
+  const s = STR[lang] || STR.cs;
+  const totalMinutes = Math.round(Math.abs(hoursDecimal) * 60);
+  const sign = hoursDecimal < 0 ? "-" : "";
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return { big: `${sign}${m}`, unit: s.min };
+  let unit;
+  if (lang === "cs") unit = h === 1 ? s.hUnit1 : h < 5 ? s.hUnit2 : s.hUnit5;
+  else unit = s.hUnit1;
+  if (m === 0) return { big: `${sign}${h}`, unit };
+  return { big: `${sign}${h}:${String(m).padStart(2, "0")}`, unit: "h" };
+}
+
+function formatDuration(hoursDecimal, unit, lang) {
+  const s = STR[lang] || STR.cs;
+  if (unit === "minutes") {
+    const sign = hoursDecimal < 0 ? "-" : "";
+    const total = Math.round(Math.abs(hoursDecimal) * 60);
+    return { big: `${sign}${total}`, unit: s.min };
+  }
+  if (unit === "days") {
+    const sign = hoursDecimal < 0 ? "-" : "";
+    const days = Math.abs(hoursDecimal) / WORKDAY_HOURS;
+    const rounded = Math.round(days * 10) / 10;
+    const isWhole = Number.isInteger(rounded);
+    let label;
+    if (lang === "cs") label = rounded === 1 ? s.dayUnit1 : isWhole && rounded >= 2 && rounded < 5 ? s.dayUnit2 : s.dayUnit5;
+    else label = rounded === 1 ? s.dayUnit1 : s.dayUnit5;
+    return { big: `${sign}${isWhole ? rounded : rounded.toFixed(1)}`, unit: label };
+  }
+  return formatHours(hoursDecimal, lang);
+}
+
+function toLocalInputValue(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function timeLeft(ms) {
+  if (ms <= 0) return "";
+  const totalSec = Math.floor(ms / 1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function extractPrice(text) {
+  const matches = text.match(/\d{1,3}(?:[ ,.]\d{3})*(?:[.,]\d{1,2})?/g) || [];
+  const nums = matches
+    .map((m) => {
+      let clean = m.trim();
+      const decMatch = clean.match(/^(.*?)[.,](\d{2})$/);
+      if (decMatch) {
+        const intPart = decMatch[1].replace(/[ ,.]/g, "");
+        return parseFloat(intPart + "." + decMatch[2]);
+      }
+      return parseFloat(clean.replace(/[ ,.]/g, ""));
+    })
+    .filter((n) => !isNaN(n) && n > 0 && n < 1000000);
+  if (!nums.length) return null;
+  return Math.max(...nums);
+}
+
+const DECISION_POSITIVE = {
+  not_buying: false,
+  worth_it: true,
+  bought_after_thinking: true,
+  skipped_after_thinking: false,
+};
+
+function decisionLabel(decision, s) {
+  if (decision === "not_buying" || decision === "skipped_after_thinking") return s.decNotBuying;
+  if (decision === "worth_it") return s.decWorthIt;
+  return s.decBought;
+}
+
+function useWindowWidth() {
+  const [width, setWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 400);
+  useEffect(() => {
+    function onResize() {
+      setWidth(window.innerWidth);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return width;
+}
+
+function uid() {
+  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now();
+}
+
+const ACHIEVEMENTS = [
+  { id: "first_calc", icon: "🧮", type: "total_decisions", threshold: 1, titleKey: "achFirstCalcTitle", descKey: "achFirstCalcDesc" },
+  { id: "ten_decisions", icon: "📝", type: "total_decisions", threshold: 10, titleKey: "achTenDecisionsTitle", descKey: "achTenDecisionsDesc" },
+  { id: "fifty_decisions", icon: "📚", type: "total_decisions", threshold: 50, titleKey: "achFiftyDecisionsTitle", descKey: "achFiftyDecisionsDesc" },
+  { id: "days_used", icon: "🗓️", type: "days_used", threshold: 7, titleKey: "achDaysUsedTitle", descKey: "achDaysUsedDesc" },
+  { id: "think_started", icon: "⏸️", type: "think_started", titleKey: "achThinkStartedTitle", descKey: "achThinkStartedDesc" },
+  { id: "think_resolved", icon: "↩️", type: "think_resolved", titleKey: "achThinkResolvedTitle", descKey: "achThinkResolvedDesc" },
+  { id: "followup_any", icon: "💬", type: "followup_any", titleKey: "achFollowupAnyTitle", descKey: "achFollowupAnyDesc" },
+  { id: "followup_regret", icon: "🪞", type: "followup_regret", titleKey: "achFollowupRegretTitle", descKey: "achFollowupRegretDesc" },
+  { id: "balanced", icon: "⚖️", type: "balanced", threshold: 5, titleKey: "achBalancedTitle", descKey: "achBalancedDesc" },
+  { id: "big_call", icon: "💎", type: "big_call", threshold: WORKDAY_HOURS, titleKey: "achBigCallTitle", descKey: "achBigCallDesc" },
+  { id: "category_range", icon: "🎯", type: "category_range", threshold: 5, titleKey: "achCategoryRangeTitle", descKey: "achCategoryRangeDesc" },
+];
+
+function computeAchievementStats(history, everStartedThink) {
+  const totalDecisions = history.length;
+  const distinctDays = new Set(history.map((h) => new Date(h.ts).toDateString())).size;
+  const hasResolvedThink = history.some((h) => h.decision === "bought_after_thinking" || h.decision === "skipped_after_thinking");
+  const hasAnyFollowup = history.some((h) => !!h.followup);
+  const hasRegretFollowup = history.some((h) => h.followup === "regret");
+  const positiveCount = history.filter((h) => DECISION_POSITIVE[h.decision]).length;
+  const negativeCount = history.filter((h) => !DECISION_POSITIVE[h.decision]).length;
+  const maxHours = history.reduce((max, h) => Math.max(max, h.hours), 0);
+  const distinctCategories = new Set(history.map((h) => h.category)).size;
+  return { totalDecisions, distinctDays, everStartedThink, hasResolvedThink, hasAnyFollowup, hasRegretFollowup, positiveCount, negativeCount, maxHours, distinctCategories };
+}
+
+function computeUnlockedAchievements(stats) {
+  return ACHIEVEMENTS.filter((a) => {
+    if (a.type === "total_decisions") return stats.totalDecisions >= a.threshold;
+    if (a.type === "days_used") return stats.distinctDays >= a.threshold;
+    if (a.type === "think_started") return stats.everStartedThink;
+    if (a.type === "think_resolved") return stats.hasResolvedThink;
+    if (a.type === "followup_any") return stats.hasAnyFollowup;
+    if (a.type === "followup_regret") return stats.hasRegretFollowup;
+    if (a.type === "balanced") return stats.positiveCount >= a.threshold && stats.negativeCount >= a.threshold;
+    if (a.type === "big_call") return stats.maxHours >= a.threshold;
+    if (a.type === "category_range") return stats.distinctCategories >= a.threshold;
+    return false;
+  }).map((a) => a.id);
+}
+
+function achievementProgress(a, stats) {
+  if (a.type === "total_decisions") return { current: Math.min(stats.totalDecisions, a.threshold), target: a.threshold };
+  if (a.type === "days_used") return { current: Math.min(stats.distinctDays, a.threshold), target: a.threshold };
+  if (a.type === "balanced") return { current: Math.min(stats.positiveCount, stats.negativeCount, a.threshold), target: a.threshold };
+  if (a.type === "big_call") return { current: Math.round(Math.min(stats.maxHours, a.threshold) * 10) / 10, target: Math.round(a.threshold * 10) / 10 };
+  if (a.type === "category_range") return { current: Math.min(stats.distinctCategories, a.threshold), target: a.threshold };
+  return null; // think_started / think_resolved / followup_any / followup_regret are one-shot, no progress bar
+}
+
+function computeStreaks(history) {
+  const purchases = history.filter((h) => DECISION_POSITIVE[h.decision]).sort((a, b) => a.ts - b.ts);
+  if (!purchases.length) return { current: 0, longest: 0 };
+  let longest = 0;
+  for (let i = 1; i < purchases.length; i++) {
+    longest = Math.max(longest, Math.floor((purchases[i].ts - purchases[i - 1].ts) / DAY));
+  }
+  const current = Math.floor((Date.now() - purchases[purchases.length - 1].ts) / DAY);
+  longest = Math.max(longest, current);
+  return { current, longest };
+}
+
+function lastCategoryInsight(history, categoryId) {
+  const past = history
+    .filter((h) => h.category === categoryId && h.followup)
+    .sort((a, b) => b.ts - a.ts);
+  return past[0] || null;
+}
+
+function effectiveRate(r) {
+  return r.rate;
+}
+
+async function fetchFxRate(from, to) {
+  if (from === to) return 1;
+  const res = await fetch(`https://api.frankfurter.app/latest?from=${from}&to=${to}`);
+  if (!res.ok) throw new Error("fx failed");
+  const data = await res.json();
+  const rate = data.rates && data.rates[to];
+  if (!rate) throw new Error("no rate");
+  return rate;
+}
+
+async function generateShareImage(result, rate, currency, lang, t, s, catLabel, unit) {
+  await (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve());
+  const canvas = document.createElement("canvas");
+  canvas.width = 800;
+  canvas.height = 1000;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = t.ticket;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = t.accent;
+  ctx.font = "24px Inter, sans-serif";
+  ctx.fillText(`${catLabel} · ${formatMoney(result.price, currency)}`, 50, 90);
+  ctx.fillStyle = "#F5EFE6";
+  ctx.font = "700 130px Fraunces, serif";
+  const df = formatDuration(result.hours, unit || "hours", lang);
+  ctx.fillText(df.big, 50, 260);
+  ctx.font = "32px Inter, sans-serif";
+  ctx.fillStyle = t.accent;
+  ctx.fillText(df.unit, 50, 310);
+  ctx.fillStyle = "#F5EFE6";
+  ctx.globalAlpha = 0.65;
+  ctx.font = "22px Inter, sans-serif";
+  ctx.fillText(`${s.atRate} ${rate.toLocaleString(LOCALES[lang])} ${CURRENCIES[currency].symbol}/h`, 50, 360);
+  ctx.globalAlpha = 1;
+  ctx.font = "700 22px Fraunces, serif";
+  ctx.fillStyle = t.accent;
+  ctx.fillText("Kolik hodin?", 50, canvas.height - 50);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+function rateLabel(r, s) {
+  return r.id === "main" ? s.mainRateLabel : r.label;
+}
+
+function getCategory(categories, id, lang) {
+  const c = categories.find((x) => x.id === id) || categories[categories.length - 1];
+  const labels = CAT_LABELS[lang] || CAT_LABELS.cs;
+  if (!c) return { label: labels.ostatni, icon: "🛍️" };
+  const label = c.custom ? c.label : labels[c.id] || c.label || labels.ostatni;
+  return { ...c, label };
+}
+
+function WorkHoursApp() {
+  const windowWidth = useWindowWidth();
+  const isWide = windowWidth >= 700;
+  const contentMaxWidth = isWide ? 640 : 420;
+  const onboardMaxWidth = isWide ? 520 : 440;
+  const sidebarWidth = isWide ? 92 : 74;
+
+  const [loaded, setLoaded] = useState(false);
+  const [setupDone, setSetupDone] = useState(false);
+  const [tab, setTab] = useState("home");
+
+  const [lang, setLang] = useState("cs");
+  const [currency, setCurrency] = useState("CZK");
+  const [rates, setRates] = useState([{ id: "main", label: "Hlavní sazba", rate: 300 }]);
+  const [activeRateId, setActiveRateId] = useState("main");
+
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [recurring, setRecurring] = useState([]);
+  const [themeName, setThemeName] = useState("ink-dark");
+  const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
+  const [notifiedIds, setNotifiedIds] = useState([]);
+  const [seenAchievements, setSeenAchievements] = useState([]);
+  const [achievementQueue, setAchievementQueue] = useState([]);
+  const [everStartedThink, setEverStartedThink] = useState(false);
+  const [walkthroughDone, setWalkthroughDone] = useState(false);
+
+  const [onboardRate, setOnboardRate] = useState("");
+  const [onboardCurrency, setOnboardCurrency] = useState("CZK");
+  const [onboardLang, setOnboardLang] = useState("cs");
+  const [onboardStep, setOnboardStep] = useState("splash"); // splash -> lang -> rate
+
+  const [category, setCategory] = useState(null);
+  const [price, setPrice] = useState("");
+  const [result, setResult] = useState(null);
+  const [pickingDuration, setPickingDuration] = useState(false);
+
+  const [pending, setPending] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [now, setNow] = useState(Date.now());
+  const [saveError, setSaveError] = useState(false);
+
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState("");
+
+  const tick = useRef(null);
+  const tabPanelRef = useRef(null);
+  const actionLockRef = useRef(false);
+  const t = getTheme(themeName);
+  const s = STR[lang] || STR.cs;
+
+  useEffect(() => {
+    ensureFonts();
+    (async () => {
+      try {
+        const res = await window.storage.get("app-data");
+        if (res && res.value) {
+          const d = JSON.parse(res.value);
+          if (d.lang) setLang(d.lang);
+          if (d.currency) setCurrency(d.currency);
+          if (Array.isArray(d.rates) && d.rates.length) setRates(d.rates);
+          if (d.activeRateId) setActiveRateId(d.activeRateId);
+          if (Array.isArray(d.categories) && d.categories.length) setCategories(d.categories);
+          if (Array.isArray(d.recurring)) setRecurring(d.recurring);
+          if (typeof d.themeName === "string") setThemeName(d.themeName);
+          if (Array.isArray(d.notifiedIds)) setNotifiedIds(d.notifiedIds);
+          if (Array.isArray(d.seenAchievements)) setSeenAchievements(d.seenAchievements);
+          if (typeof d.everStartedThink === "boolean") setEverStartedThink(d.everStartedThink);
+          if (typeof d.walkthroughDone === "boolean") setWalkthroughDone(d.walkthroughDone);
+          if (d.setupDone) setSetupDone(true);
+          if (Array.isArray(d.pending)) setPending(d.pending);
+          if (Array.isArray(d.history)) setHistory(d.history);
+        }
+      } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        await window.storage.set(
+          "app-data",
+          JSON.stringify({ lang, currency, rates, activeRateId, categories, recurring, themeName, notifiedIds, seenAchievements, everStartedThink, walkthroughDone, setupDone, pending, history })
+        );
+        setSaveError(false);
+      } catch (e) {
+        setSaveError(true);
+      }
+    })();
+  }, [lang, currency, rates, activeRateId, categories, recurring, themeName, notifiedIds, seenAchievements, everStartedThink, walkthroughDone, setupDone, pending, history, loaded]);
+
+  useEffect(() => {
+    tick.current = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick.current);
+  }, []);
+
+  useEffect(() => {
+    const el = tabPanelRef.current;
+    if (!el) return;
+    el.classList.remove("wh-tabpanel");
+    void el.offsetWidth; // force reflow so the animation replays
+    el.classList.add("wh-tabpanel");
+  }, [tab]);
+
+  useEffect(() => {
+    if (!loaded || setupDone || onboardStep !== "splash") return;
+    const timer = setTimeout(() => setOnboardStep("lang"), 1400);
+    return () => clearTimeout(timer);
+  }, [loaded, setupDone, onboardStep]);
+
+  useEffect(() => {
+    if (!loaded || !setupDone) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const qCat = params.get("cat");
+      const qPrice = params.get("price");
+      if (qCat || qPrice) {
+        setTab("home");
+        if (qCat) setCategory(qCat);
+        if (qPrice) setPrice(qPrice);
+      }
+    } catch (e) {}
+  }, [loaded, setupDone]);
+
+  const rate = effectiveRate(rates.find((r) => r.id === activeRateId) || rates[0] || { rate: 300 });
+
+  useEffect(() => {
+    if (notifPerm !== "granted") return;
+    pending.forEach((item) => {
+      if (item.until <= now && !notifiedIds.includes(item.id)) {
+        try {
+          new Notification(s.pending, { body: `${getCategory(categories, item.category, lang).label} · ${formatMoney(item.price, item.currency || currency)}` });
+        } catch (e) {}
+        setNotifiedIds((n) => [...n, item.id]);
+      }
+    });
+  }, [now, pending, notifPerm]); // eslint-disable-line
+
+  const followupsDue = useMemo(
+    () => history.filter((h) => (h.decision === "worth_it" || h.decision === "bought_after_thinking") && !h.followup && now - h.ts >= 3 * DAY),
+    [history, now]
+  );
+
+  useEffect(() => {
+    if (notifPerm !== "granted") return;
+    followupsDue.forEach((h) => {
+      const fid = "followup-" + h.id;
+      if (!notifiedIds.includes(fid)) {
+        try {
+          new Notification(s.followupTitle, { body: getCategory(categories, h.category, lang).label });
+        } catch (e) {}
+        setNotifiedIds((n) => [...n, fid]);
+      }
+    });
+  }, [followupsDue, notifPerm]); // eslint-disable-line
+
+  function finishOnboarding() {
+    const v = parseLocaleNumber(onboardRate);
+    if (!(v > 0)) return;
+    setRates([{ id: "main", label: "Hlavní sazba", rate: v }]);
+    setActiveRateId("main");
+    setCurrency(onboardCurrency);
+    setLang(onboardLang);
+    setSetupDone(true);
+  }
+
+  const priceNum = parseLocaleNumber(price);
+
+  useEffect(() => {
+    if (priceNum > 0 && rate > 0) {
+      const cat = category || "ostatni";
+      setResult({ category: cat, price: priceNum, hours: priceNum / rate, currency });
+    } else {
+      setResult(null);
+      setPickingDuration(false);
+    }
+  }, [priceNum, rate, category, currency]);
+
+  function resetForm() {
+    setCategory(null);
+    setPrice("");
+    setResult(null);
+    setPickingDuration(false);
+    setScanNote("");
+  }
+
+  function decide(kind) {
+    if (!result || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setTimeout(() => { actionLockRef.current = false; }, 500);
+    setHistory((h) => [{ id: uid(), category: result.category, price: result.price, hours: result.hours, decision: kind, ts: Date.now(), currency: result.currency }, ...h]);
+    resetForm();
+  }
+
+  function startThinking(ms) {
+    if (!result || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setTimeout(() => { actionLockRef.current = false; }, 500);
+    setPending((p) => [{ id: uid(), category: result.category, price: result.price, hours: result.hours, until: Date.now() + ms, currency: result.currency }, ...p]);
+    setEverStartedThink(true);
+    resetForm();
+  }
+
+  function resolvePending(item, kind) {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+    setTimeout(() => { actionLockRef.current = false; }, 500);
+    setPending((p) => p.filter((x) => x.id !== item.id));
+    setHistory((h) => [{ id: uid(), category: item.category, price: item.price, hours: item.hours, decision: kind, ts: Date.now(), currency: item.currency || currency }, ...h]);
+  }
+
+  function answerFollowup(h, glad) {
+    setHistory((hist) => hist.map((x) => (x.id === h.id ? { ...x, followup: glad ? "glad" : "regret" } : x)));
+  }
+
+  function undoLast() {
+    setHistory((h) => h.slice(1));
+  }
+
+  function deleteHistoryEntry(id) {
+    setHistory((h) => h.filter((x) => x.id !== id));
+  }
+
+  function deletePendingEntry(id) {
+    setPending((p) => p.filter((x) => x.id !== id));
+  }
+
+  function resetApp() {
+    setSetupDone(false);
+    setOnboardStep("splash");
+    setLang("cs");
+    setCurrency("CZK");
+    setRates([{ id: "main", label: "Hlavní sazba", rate: 300 }]);
+    setActiveRateId("main");
+    setCategories(DEFAULT_CATEGORIES);
+    setRecurring([]);
+    setThemeName("ink-dark");
+    setNotifiedIds([]);
+    setSeenAchievements([]);
+    setAchievementQueue([]);
+    setEverStartedThink(false);
+    setWalkthroughDone(false);
+    setPending([]);
+    setHistory([]);
+    setCategory(null);
+    setPrice("");
+    setResult(null);
+  }
+
+  async function requestNotifications() {
+    if (typeof Notification === "undefined") return;
+    const perm = await Notification.requestPermission();
+    setNotifPerm(perm);
+  }
+
+  async function handleScan(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setScanning(true);
+    setScanNote("");
+    try {
+      await loadTesseract();
+      const { data } = await window.Tesseract.recognize(file, "eng");
+      const found = extractPrice(data.text || "");
+      if (found) {
+        setPrice(String(found));
+        setScanNote(s.scanFound);
+      } else {
+        setScanNote(s.scanNotFound);
+      }
+    } catch (err) {
+      setScanNote(s.scanFailed);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  function exportJSON() {
+    const backup = {
+      _type: "kolik-hodin-backup",
+      _version: 1,
+      lang,
+      currency,
+      rates,
+      activeRateId,
+      categories,
+      recurring,
+      themeName,
+      pending,
+      history,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    downloadBlob(blob, "kolik-hodin-zaloha.json");
+  }
+
+  const [importState, setImportState] = useState(null); // 'success' | 'error' | null
+
+  async function importBackup(file) {
+    setImportState(null);
+    try {
+      const text = await file.text();
+      const d = JSON.parse(text);
+      if (typeof d !== "object" || d === null) throw new Error("bad format");
+      const recognizedKeys = ["lang", "currency", "rates", "activeRateId", "categories", "recurring", "themeName", "pending", "history"];
+      const hasRecognizedData = recognizedKeys.some((k) => d[k] !== undefined);
+      if (!hasRecognizedData) throw new Error("no recognizable backup fields");
+      if (d.lang) setLang(d.lang);
+      if (d.currency) setCurrency(d.currency);
+      if (Array.isArray(d.rates) && d.rates.length) setRates(d.rates);
+      if (d.activeRateId) setActiveRateId(d.activeRateId);
+      if (Array.isArray(d.categories) && d.categories.length) setCategories(d.categories);
+      if (Array.isArray(d.recurring)) setRecurring(d.recurring);
+      if (typeof d.themeName === "string") setThemeName(d.themeName);
+      if (Array.isArray(d.pending)) setPending(d.pending);
+      if (Array.isArray(d.history)) setHistory(d.history);
+      setImportState("success");
+    } catch (e) {
+      setImportState("error");
+    }
+  }
+
+  function exportCSV() {
+    const rows = [["date", "category", "price", "hours", "decision"]];
+    history.forEach((h) => {
+      rows.push([
+        new Date(h.ts).toLocaleString(LOCALES[lang]),
+        getCategory(categories, h.category, lang).label,
+        h.price,
+        h.hours.toFixed(2),
+        decisionLabel(h.decision, s),
+      ]);
+    });
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    downloadBlob(blob, "kolik-hodin-historie.csv");
+  }
+
+  function downloadBlob(blob, name) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {}
+  }
+
+  async function shareResult(unit) {
+    if (!result) return;
+    try {
+      const catLabel = getCategory(categories, result.category, lang).label;
+      const blob = await generateShareImage(result, rate, currency, lang, t, s, catLabel, unit);
+      if (!blob) return;
+      const file = new File([blob], "kolik-hodin.png", { type: "image/png" });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Kolik hodin?" });
+      } else {
+        downloadBlob(blob, "kolik-hodin.png");
+      }
+    } catch (e) {
+      try {
+        const catLabel = getCategory(categories, result.category, lang).label;
+        const blob = await generateShareImage(result, rate, currency, lang, t, s, catLabel, unit);
+        if (blob) downloadBlob(blob, "kolik-hodin.png");
+      } catch (e2) {}
+    }
+  }
+
+  const savedHoursTotal = useMemo(() => history.filter((h) => !DECISION_POSITIVE[h.decision]).reduce((sum, h) => sum + h.hours, 0), [history]);
+  const savedMoneyTotal = useMemo(
+    () => history.filter((h) => !DECISION_POSITIVE[h.decision] && (h.currency || currency) === currency).reduce((sum, h) => sum + h.price, 0),
+    [history, currency]
+  );
+  const streaks = useMemo(() => computeStreaks(history), [history, now]);
+  const achievementStats = useMemo(() => computeAchievementStats(history, everStartedThink), [history, everStartedThink]);
+  const unlockedAchievements = useMemo(
+    () => computeUnlockedAchievements(achievementStats),
+    [achievementStats]
+  );
+
+  useEffect(() => {
+    if (!loaded) return;
+    const fresh = unlockedAchievements.filter((id) => !seenAchievements.includes(id) && !achievementQueue.includes(id));
+    if (fresh.length) setAchievementQueue((q) => [...q, ...fresh]);
+  }, [unlockedAchievements, loaded]); // eslint-disable-line
+
+  const newAchievement = achievementQueue[0] || null;
+
+  function dismissAchievement() {
+    if (!newAchievement) return;
+    setSeenAchievements((s) => [...s, newAchievement]);
+    setAchievementQueue((q) => q.slice(1));
+  }
+
+  const savedHoursMonth = useMemo(() => {
+    const monthAgo = now - 30 * DAY;
+    return history.filter((h) => !DECISION_POSITIVE[h.decision] && h.ts >= monthAgo).reduce((sum, h) => sum + h.hours, 0);
+  }, [history, now]);
+
+  const spentHoursTotal = useMemo(() => history.filter((h) => DECISION_POSITIVE[h.decision]).reduce((sum, h) => sum + h.hours, 0), [history]);
+  const spentHoursMonth = useMemo(() => {
+    const monthAgo = now - 30 * DAY;
+    return history.filter((h) => DECISION_POSITIVE[h.decision] && h.ts >= monthAgo).reduce((sum, h) => sum + h.hours, 0);
+  }, [history, now]);
+
+  const recurringMonthlyHours = useMemo(() => recurring.reduce((sum, r) => sum + (r.cycle === "year" ? r.price / 12 : r.price) / rate, 0), [recurring, rate]);
+
+  if (!loaded) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: t.bg }}>
+        <GlobalStyles />
+        <div style={{ display: "flex", gap: 6 }}>
+          {[0, 1, 2].map((i) => (
+            <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: t.accent, opacity: 0.35, animation: `wh-pulse 1.1s ${i * 0.18}s infinite ease-in-out` }} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ================= Onboarding =================
+  if (!setupDone) {
+    const os = STR[onboardLang] || STR.cs;
+
+    if (onboardStep === "splash") {
+      return (
+        <div style={{ fontFamily: "'Inter', sans-serif", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: t.bg, color: t.text }}>
+          <GlobalStyles />
+          <div
+            style={{
+              width: 116,
+              height: 116,
+              borderRadius: "50%",
+              background: `linear-gradient(150deg, ${shade(t.accent, 12)}, ${shade(t.accent, -10)})`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: 22,
+              boxShadow: `0 10px 28px ${t.ticket}66`,
+            }}
+          >
+            <svg width="62" height="62" viewBox="0 0 38 38">
+              <line x1="8" y1="5.5" x2="30" y2="5.5" stroke={t.ticket} strokeWidth="2.6" strokeLinecap="round" />
+              <line x1="8" y1="32.5" x2="30" y2="32.5" stroke={t.ticket} strokeWidth="2.6" strokeLinecap="round" />
+              <path d="M 8 5.5 L 30 5.5 L 20 19 L 18 19 Z" fill="none" stroke={t.ticket} strokeWidth="2.1" strokeLinejoin="round" />
+              <path d="M 18 19 L 20 19 L 30 32.5 L 8 32.5 Z" fill="none" stroke={t.ticket} strokeWidth="2.1" strokeLinejoin="round" />
+              {/* settled pile at the bottom (static) */}
+              <circle cx="13.3" cy="29" r="2.3" fill={t.ticket} />
+              <circle cx="19" cy="29" r="2.3" fill={t.ticket} />
+              <circle cx="24.7" cy="29" r="2.3" fill={t.ticket} />
+              <circle cx="16.2" cy="25.2" r="2.3" fill={t.ticket} />
+              <circle cx="21.8" cy="25.2" r="2.3" fill={t.ticket} />
+              {/* falling coins (animated, staggered) */}
+              <circle className="wh-coin" cx="19" cy="19" r="2.4" fill={t.ticket} style={{ animationDelay: "0s" }} />
+              <circle className="wh-coin" cx="19" cy="19" r="2.4" fill={t.ticket} style={{ animationDelay: "0.47s" }} />
+              <circle className="wh-coin" cx="19" cy="19" r="2.4" fill={t.ticket} style={{ animationDelay: "0.94s" }} />
+            </svg>
+          </div>
+          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 24, letterSpacing: "-0.01em" }}>Kolik hodin?</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 26 }}>
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: t.accent,
+                  opacity: 0.35,
+                  animation: `wh-pulse 1.1s ${i * 0.18}s infinite ease-in-out`,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (onboardStep === "lang") {
+      return (
+        <div style={{ fontFamily: "'Inter', sans-serif", minHeight: "100vh", display: "flex", justifyContent: "center", background: t.bg, color: t.text }}>
+          <GlobalStyles />
+          <div style={{ width: "100%", maxWidth: onboardMaxWidth, padding: "60px 22px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 24, marginBottom: 26 }}>{os.language}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 26 }}>
+              {[
+                { id: "cs", label: "Čeština" },
+                { id: "en", label: "English" },
+                { id: "pl", label: "Polski" },
+                { id: "es", label: "Español" },
+              ].map((l) => (
+                <button
+                  key={l.id}
+                  onClick={() => setOnboardLang(l.id)}
+                  style={{
+                    padding: "16px 18px",
+                    borderRadius: 12,
+                    border: onboardLang === l.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`,
+                    background: onboardLang === l.id ? t.accentBg : t.card,
+                    color: t.text,
+                    fontWeight: 600,
+                    fontSize: 15,
+                    textAlign: "left",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  {l.label}
+                  {onboardLang === l.id && <span style={{ color: t.accent }}>✓</span>}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setOnboardStep("rate")}
+              style={{ width: "100%", background: t.ticket, color: "#fff", border: "none", borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 600 }}
+            >
+              {(STR[onboardLang] || STR.cs).continue}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ fontFamily: "'Inter', sans-serif", minHeight: "100vh", display: "flex", justifyContent: "center", background: t.bg, color: t.text }}>
+        <GlobalStyles />
+        <div style={{ width: "100%", maxWidth: onboardMaxWidth, padding: "56px 22px" }}>
+          <button
+            onClick={() => setOnboardStep("lang")}
+            style={{ background: "none", border: "none", color: t.subtext, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, marginBottom: 16, display: "flex", alignItems: "center", gap: 4 }}
+          >
+            ← {os.back}
+          </button>
+          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 26, marginBottom: 8 }}>{os.appTitle}</div>
+          <div style={{ fontSize: 14.5, color: t.subtext, marginBottom: 26, lineHeight: 1.5 }}>{os.onboardDesc}</div>
+
+          <label style={labelStyle(t)}>{os.currency}</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+            {Object.keys(CURRENCIES).map((c) => (
+              <button key={c} onClick={() => setOnboardCurrency(c)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: onboardCurrency === c ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: onboardCurrency === c ? t.accentBg : t.card, color: t.text, fontWeight: 600, fontSize: 14 }}>
+                {c} · {CURRENCIES[c].symbol}
+              </button>
+            ))}
+          </div>
+
+          <label style={labelStyle(t)}>{os.netRate}</label>
+          <div style={{ position: "relative" }}>
+            <input autoFocus value={onboardRate} onChange={(e) => setOnboardRate(e.target.value)} onKeyDown={(e) => e.key === "Enter" && finishOnboarding()} inputMode="decimal" placeholder="0" maxLength={10} style={{ ...inputStyle(t), paddingRight: 56 }} />
+            <span style={{ position: "absolute", right: 14, top: 12, color: t.subtext, fontSize: 14, fontWeight: 600 }}>{CURRENCIES[onboardCurrency].symbol}/h</span>
+          </div>
+
+          <button
+            disabled={!(parseLocaleNumber(onboardRate) > 0)}
+            onClick={finishOnboarding}
+            style={{ marginTop: 22, width: "100%", background: parseLocaleNumber(onboardRate) > 0 ? t.ticket : t.border, color: "#fff", border: "none", borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 600 }}
+          >
+            {os.continue}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ================= Main app =================
+  return (
+    <div style={{ fontFamily: "'Inter', sans-serif", minHeight: "100vh", display: "flex", background: t.bg, color: t.text }}>
+      <GlobalStyles />
+      {newAchievement && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 50,
+            display: "flex",
+            justifyContent: "center",
+            padding: "16px 16px 0",
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: contentMaxWidth,
+              background: t.ticket,
+              color: "#F5EFE6",
+              borderRadius: 16,
+              padding: "16px 18px",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 30 }}>{ACHIEVEMENTS.find((a) => a.id === newAchievement)?.icon}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, opacity: 0.7, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>{s.achievementUnlockedToast}</div>
+              <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15 }}>
+                {s[ACHIEVEMENTS.find((a) => a.id === newAchievement)?.titleKey]}
+              </div>
+            </div>
+            <button onClick={dismissAchievement} style={{ background: t.accent, color: t.fillText, border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+              {s.gotIt}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ width: sidebarWidth, flexShrink: 0, background: t.card, borderRight: `1px solid ${t.border}`, display: "flex", flexDirection: "column", alignItems: "stretch", paddingTop: 18 }}>
+        {[
+          { id: "home", label: s.navHome },
+          { id: "stats", label: s.navStats },
+          { id: "recurring", label: s.navRecurring },
+          { id: "settings", label: s.navSettings },
+        ].map((tb) => (
+          <button
+            key={tb.id}
+            onClick={() => setTab(tb.id)}
+            style={{ background: "none", border: "none", padding: "12px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, color: tab === tb.id ? t.accent : t.subtext, fontWeight: tab === tb.id ? 700 : 500, borderLeft: tab === tb.id ? `2.5px solid ${t.accent}` : "2.5px solid transparent" }}
+          >
+            <NavIcon id={tb.id} size={isWide ? 30 : 26} />
+            <span style={{ fontSize: isWide ? 11.5 : 10, lineHeight: 1.15 }}>{tb.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, display: "flex", justifyContent: "center", overflowY: "auto" }}>
+        <div style={{ width: "100%", maxWidth: contentMaxWidth, padding: "24px 16px 40px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 21, margin: 0 }}>{s.appTitle}</h1>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: t.subtext }}>
+              {rate.toLocaleString(LOCALES[lang])} {CURRENCIES[currency].symbol}/h
+            </div>
+          </div>
+
+          <div ref={tabPanelRef} className="wh-tabpanel">
+            <div style={{ display: tab === "home" ? "block" : "none" }}>
+              <HomeTab t={t} s={s} lang={lang} rates={rates} activeRateId={activeRateId} setActiveRateId={setActiveRateId} categories={categories} category={category} setCategory={setCategory} price={price} setPrice={setPrice} currency={currency} scanning={scanning} scanNote={scanNote} handleScan={handleScan} result={result} rate={rate} pickingDuration={pickingDuration} setPickingDuration={setPickingDuration} decide={decide} startThinking={startThinking} resetForm={resetForm} pending={pending} now={now} resolvePending={resolvePending} followupsDue={followupsDue} answerFollowup={answerFollowup} history={history} deletePendingEntry={deletePendingEntry} shareResult={shareResult} walkthroughDone={walkthroughDone} setWalkthroughDone={setWalkthroughDone} isWide={isWide} />
+            </div>
+
+            <div style={{ display: tab === "stats" ? "block" : "none" }}>
+              <StatsTab t={t} s={s} lang={lang} currency={currency} categories={categories} savedHoursTotal={savedHoursTotal} savedMoneyTotal={savedMoneyTotal} savedHoursMonth={savedHoursMonth} spentHoursTotal={spentHoursTotal} spentHoursMonth={spentHoursMonth} history={history} exportCSV={exportCSV} streaks={streaks} undoLast={undoLast} deleteHistoryEntry={deleteHistoryEntry} unlockedAchievements={unlockedAchievements} achievementStats={achievementStats} />
+            </div>
+
+            <div style={{ display: tab === "recurring" ? "block" : "none" }}>
+              <RecurringTab t={t} s={s} currency={currency} recurring={recurring} setRecurring={setRecurring} rate={rate} recurringMonthlyHours={recurringMonthlyHours} lang={lang} />
+            </div>
+
+            <div style={{ display: tab === "settings" ? "block" : "none" }}>
+              <SettingsTab t={t} s={s} lang={lang} setLang={setLang} themeName={themeName} setThemeName={setThemeName} currency={currency} setCurrency={setCurrency} rates={rates} setRates={setRates} activeRateId={activeRateId} setActiveRateId={setActiveRateId} categories={categories} setCategories={setCategories} notifPerm={notifPerm} requestNotifications={requestNotifications} exportJSON={exportJSON} importBackup={importBackup} importState={importState} resetApp={resetApp} />
+            </div>
+          </div>
+
+          {saveError && <div style={{ fontSize: 11.5, color: t.subtext, textAlign: "center", marginTop: 24 }}>{s.saveError}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ================= Home tab =================
+// ================= Swipe-to-delete wrapper =================
+// ================= Nav icons =================
+function NavIcon({ id, size = 20 }) {
+  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+  if (id === "home") {
+    return (
+      <svg {...common}>
+        <line x1="6" y1="4" x2="18" y2="4" strokeLinecap="round" />
+        <line x1="6" y1="20" x2="18" y2="20" strokeLinecap="round" />
+        <path d="M 6 4 L 18 4 L 12.7 12 L 11.3 12 Z" strokeLinejoin="round" />
+        <path d="M 11.3 12 L 12.7 12 L 18 20 L 6 20 Z" strokeLinejoin="round" />
+        <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+  if (id === "stats") {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+        <rect x="4" y="13" width="3.6" height="7" rx="1" />
+        <rect x="10.2" y="8" width="3.6" height="12" rx="1" />
+        <rect x="16.4" y="4" width="3.6" height="16" rx="1" />
+      </svg>
+    );
+  }
+  if (id === "recurring") {
+    return (
+      <svg {...common}>
+        <path d="M19.5 12a7.5 7.5 0 10-2.2 5.3" />
+        <path d="M19.5 7.5v4.5h-4.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <line x1="4" y1="6.5" x2="20" y2="6.5" />
+      <circle cx="9.5" cy="6.5" r="2.1" fill="currentColor" stroke="none" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <circle cx="15" cy="12" r="2.1" fill="currentColor" stroke="none" />
+      <line x1="4" y1="17.5" x2="20" y2="17.5" />
+      <circle cx="7.5" cy="17.5" r="2.1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function SwipeRow({ t, s, onDelete, deleteLabel, children }) {
+  const [dx, setDx] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const confirmTimer = useRef(null);
+
+  function onDown(e) {
+    dragging.current = true;
+    startX.current = (e.touches ? e.touches[0].clientX : e.clientX) - dx;
+  }
+  function onMove(e) {
+    if (!dragging.current) return;
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - startX.current;
+    setDx(Math.max(-90, Math.min(0, x)));
+  }
+  function onUp() {
+    dragging.current = false;
+    setDx(dx < -55 ? -90 : 0);
+  }
+
+  function handleDeleteTap() {
+    if (!confirming) {
+      setConfirming(true);
+      confirmTimer.current = setTimeout(() => {
+        setConfirming(false);
+        setDx(0);
+      }, 2200);
+      return;
+    }
+    clearTimeout(confirmTimer.current);
+    setConfirming(false);
+    onDelete();
+    setDx(0);
+  }
+
+  useEffect(() => () => clearTimeout(confirmTimer.current), []);
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden", borderRadius: 14 }}>
+      <div
+        onClick={handleDeleteTap}
+        style={{
+          position: "absolute",
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 90,
+          background: confirming ? t.decline : t.accent,
+          color: t.fillText,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 11.5,
+          fontWeight: 700,
+          cursor: "pointer",
+          textAlign: "center",
+          padding: "0 6px",
+        }}
+      >
+        {confirming ? s.tapAgainToDelete : deleteLabel}
+      </div>
+      <div
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        onMouseLeave={() => dragging.current && onUp()}
+        onTouchStart={onDown}
+        onTouchMove={onMove}
+        onTouchEnd={onUp}
+        style={{ transform: `translateX(${dx}px)`, transition: dragging.current ? "none" : "transform 0.18s", position: "relative" }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function HomeTab(props) {
+  const { t, s, lang, rates, activeRateId, setActiveRateId, categories, category, setCategory, price, setPrice, currency, scanning, scanNote, handleScan, result, rate, pickingDuration, setPickingDuration, decide, startThinking, resetForm, pending, now, resolvePending, followupsDue, answerFollowup, history, deletePendingEntry, shareResult, walkthroughDone, setWalkthroughDone, isWide } = props;
+
+  const [otherCurrency, setOtherCurrency] = useState(null); // null or currency code
+  const [converting, setConverting] = useState(false);
+  const [convertNote, setConvertNote] = useState("");
+  const [displayUnit, setDisplayUnit] = useState("hours"); // minutes | hours | days
+  const [moreOptionsOpen, setMoreOptionsOpen] = useState(false);
+  const [itemQuery, setItemQuery] = useState("");
+  const [showCustomTimer, setShowCustomTimer] = useState(false);
+  const [customDateTime, setCustomDateTime] = useState(() => toLocalInputValue(new Date(Date.now() + 60 * 60 * 1000)));
+  const [customTimeError, setCustomTimeError] = useState(false);
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+
+  function searchOnline() {
+    const q = itemQuery.trim() || (category ? getCategory(categories, category, lang).label : "");
+    if (!q) return;
+    window.open(`https://www.google.com/search?tbm=shop&q=${encodeURIComponent(q)}`, "_blank");
+  }
+  const canSearch = !!(itemQuery.trim() || category);
+
+  const THINK_OPTIONS = [
+    { label: s.think30, ms: 30 * 60 * 1000 },
+    { label: s.think24h, ms: 24 * 60 * 60 * 1000 },
+    { label: s.think3d, ms: 3 * DAY },
+  ];
+
+  const insight = category ? lastCategoryInsight(history, category) : null;
+  const df = result ? formatDuration(result.hours, displayUnit, lang) : null;
+  const activeCat = category ? getCategory(categories, category, lang) : null;
+
+  async function handleConvert() {
+    if (!otherCurrency || otherCurrency === currency) return;
+    setConverting(true);
+    setConvertNote("");
+    try {
+      const fx = await fetchFxRate(otherCurrency, currency);
+      const raw = parseLocaleNumber(price);
+      const converted = Math.round(raw * fx * 100) / 100;
+      setPrice(String(converted));
+      setOtherCurrency(null);
+      setConverting(false);
+    } catch (e) {
+      setConverting(false);
+      setConvertNote(s.conversionFailed);
+    }
+  }
+
+  return (
+    <div>
+      {!walkthroughDone && (
+        <div style={{ background: t.accentBg, borderRadius: 12, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12.5, color: t.text }}>{s.walkthroughTip}</span>
+          <button onClick={() => setWalkthroughDone(true)} style={{ background: "none", border: "none", color: t.accent, fontWeight: 700, fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap" }}>
+            {s.gotIt}
+          </button>
+        </div>
+      )}
+
+      {rates.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto" }}>
+          {rates.map((r) => (
+            <button key={r.id} onClick={() => setActiveRateId(r.id)} style={{ padding: "7px 12px", borderRadius: 20, border: activeRateId === r.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: activeRateId === r.id ? t.accentBg : t.card, color: t.text, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>
+              {rateLabel(r, s)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ background: t.card, borderRadius: 18, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,0.08)", marginBottom: 20 }}>
+        {!category ? (
+          <button
+            onClick={() => setCategoryPickerOpen(!categoryPickerOpen)}
+            style={{ background: "none", border: `1px dashed ${t.border}`, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 600, color: t.subtext, cursor: "pointer", marginBottom: 12 }}
+          >
+            + {s.category} <span style={{ fontWeight: 500 }}>{s.optionalLabel}</span>
+          </button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={() => setCategoryPickerOpen(!categoryPickerOpen)}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: t.accentBg, border: `1px solid ${t.accent}`, borderRadius: 20, padding: "6px 12px", fontSize: 12.5, fontWeight: 600, color: t.text, cursor: "pointer" }}
+            >
+              <span>{activeCat.icon}</span>
+              <span>{activeCat.label}</span>
+            </button>
+            <button onClick={() => setCategory(null)} style={{ background: "none", border: "none", color: t.subtext, fontSize: 15, cursor: "pointer" }}>✕</button>
+          </div>
+        )}
+
+        {categoryPickerOpen && (
+          <div style={{ display: "grid", gridTemplateColumns: isWide ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+            {categories.map((c) => {
+              const cat = getCategory(categories, c.id, lang);
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    setCategory(c.id);
+                    setCategoryPickerOpen(false);
+                  }}
+                  style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "10px 4px", borderRadius: 12, border: category === c.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: category === c.id ? t.accentBg : t.cardAlt, cursor: "pointer" }}
+                >
+                  <span style={{ fontSize: 20 }}>{cat.icon}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 600, color: t.text, textAlign: "center", lineHeight: 1.2 }}>{cat.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {insight && (
+          <div style={{ fontSize: 11.5, color: t.subtext, marginBottom: 12 }}>
+            {s.lastTimePrefix} {insight.followup === "glad" ? s.lastTimeGlad : s.lastTimeRegret}
+          </div>
+        )}
+
+        <label style={labelStyle(t)}>{s.price}</label>
+        <div style={{ position: "relative" }}>
+          <input autoFocus value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" placeholder="0" maxLength={10} style={{ ...inputStyle(t), paddingRight: 44, fontSize: 22, fontWeight: 700 }} />
+          <span style={{ position: "absolute", right: 14, top: 15, color: t.subtext, fontSize: 16, fontWeight: 600 }}>{CURRENCIES[otherCurrency || currency].symbol}</span>
+        </div>
+        {convertNote && <div style={{ fontSize: 11.5, color: t.accent, marginTop: 6 }}>{convertNote}</div>}
+
+        <button
+          onClick={() => setMoreOptionsOpen(!moreOptionsOpen)}
+          style={{ background: "none", border: "none", color: t.subtext, fontSize: 11.5, marginTop: 10, cursor: "pointer", textDecoration: "underline", padding: 0, display: "block" }}
+        >
+          {moreOptionsOpen ? s.back : s.moreOptions}
+        </button>
+
+        {moreOptionsOpen && (
+          <div style={{ marginTop: 8, background: t.cardAlt, borderRadius: 10, padding: 12, border: `1px solid ${t.border}`, display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: t.text, marginBottom: 6 }}>{s.priceInOtherCurrency}</div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                {Object.keys(CURRENCIES).map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setOtherCurrency(c === currency ? null : c)}
+                    style={{
+                      flex: 1,
+                      padding: "7px 0",
+                      borderRadius: 8,
+                      border: (otherCurrency || currency) === c ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`,
+                      background: (otherCurrency || currency) === c ? t.accentBg : t.card,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: t.text,
+                    }}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+              {otherCurrency && otherCurrency !== currency && (
+                <button onClick={handleConvert} disabled={converting} style={{ ...btnSecondary(t), width: "100%", padding: "8px 0", fontSize: 12.5, opacity: converting ? 0.6 : 1 }}>
+                  {converting ? s.convertingRate : `${otherCurrency} → ${currency}`}
+                </button>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: t.text, marginBottom: 6 }}>{s.priceHelperToggle}</div>
+              <input
+                value={itemQuery}
+                onChange={(e) => setItemQuery(e.target.value)}
+                placeholder={s.itemQueryPlaceholder}
+                style={{ ...inputStyle(t), padding: "8px 10px", fontSize: 13, marginBottom: 8 }}
+              />
+              <button onClick={searchOnline} disabled={!canSearch} style={{ ...btnSecondary(t), width: "100%", padding: "8px 0", fontSize: 12.5, opacity: canSearch ? 1 : 0.5, cursor: canSearch ? "pointer" : "default" }}>
+                {s.searchOnline}
+              </button>
+            </div>
+
+            <label htmlFor="camera-input" style={{ width: "100%", boxSizing: "border-box", background: t.card, color: t.text, border: `1px solid ${t.border}`, borderRadius: 10, padding: "10px 0", fontSize: 13.5, fontWeight: 600, cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: scanning ? 0.6 : 1 }}>
+              {scanning ? s.scanning : `📷 ${s.scan}`}
+              <input id="camera-input" type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleScan} disabled={scanning} />
+            </label>
+            {scanNote && <div style={{ fontSize: 12, color: t.subtext, marginTop: -6, textAlign: "center" }}>{scanNote}</div>}
+          </div>
+        )}
+      </div>
+
+      {result && otherCurrency && otherCurrency !== currency && (
+        <div style={{ marginBottom: 20, background: t.cardAlt, border: `1px dashed ${t.border}`, borderRadius: 16, padding: 18, textAlign: "center" }}>
+          <div style={{ fontSize: 13, color: t.subtext, lineHeight: 1.5 }}>{s.convertFirstHint}</div>
+        </div>
+      )}
+
+      {result && !(otherCurrency && otherCurrency !== currency) && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ background: `linear-gradient(160deg, ${shade(t.ticket, 8)}, ${t.ticket})`, color: "#F5EFE6", borderRadius: "18px 18px 0 0", padding: "22px 22px 26px", position: "relative", boxShadow: `0 6px 20px ${t.ticket}44` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 4 }}>
+                {getCategory(categories, result.category, lang).label} · {formatMoney(result.price, currency)}
+              </div>
+              <button onClick={() => shareResult(displayUnit)} style={{ background: "none", border: "none", color: "#F5EFE6", opacity: 0.75, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                📤 {s.share}
+              </button>
+            </div>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 56, lineHeight: 1, display: "flex", alignItems: "baseline", gap: 10 }}>
+              {df.big}
+              <span style={{ fontSize: 18, fontFamily: "'Inter', sans-serif", fontWeight: 500, opacity: 0.75 }}>{df.unit}</span>
+            </div>
+            <div style={{ fontSize: 12.5, opacity: 0.6, marginTop: 6, marginBottom: 14 }}>{s.atRate} {rate.toLocaleString(LOCALES[lang])} {CURRENCIES[currency].symbol}/h</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[
+                { id: "minutes", label: s.unitMinutes },
+                { id: "hours", label: s.unitHours },
+                { id: "days", label: s.unitDays },
+              ].map((u) => (
+                <button
+                  key={u.id}
+                  onClick={() => setDisplayUnit(u.id)}
+                  style={{
+                    flex: 1,
+                    padding: "6px 0",
+                    borderRadius: 8,
+                    border: "none",
+                    background: displayUnit === u.id ? t.accent : "rgba(245,239,230,0.12)",
+                    color: displayUnit === u.id ? "#fff" : "#F5EFE6",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {u.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ height: 0, borderTop: `2px dashed ${t.border}`, position: "relative", background: t.bg }}>
+            <div style={{ ...dotSide, left: -8, background: t.bg }} />
+            <div style={{ ...dotSide, right: -8, background: t.bg }} />
+          </div>
+          <div style={{ background: t.card, borderRadius: "0 0 18px 18px", padding: 18, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
+            {!pickingDuration ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                <button onClick={() => decide("worth_it")} style={btnPrimary(t)}>{s.worthIt}</button>
+                <button onClick={() => setPickingDuration(true)} style={btnThink(t)}>{s.thinkAboutIt}</button>
+                <button onClick={() => decide("not_buying")} style={btnDecline(t)}>{s.notBuying}</button>
+                <button onClick={resetForm} style={{ background: "none", border: "none", color: t.subtext, fontSize: 13, marginTop: 4, cursor: "pointer" }}>{s.back}</button>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 13, color: t.subtext, marginBottom: 10, fontWeight: 600 }}>{s.thinkPrompt}</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {THINK_OPTIONS.map((opt) => (
+                    <button key={opt.label} onClick={() => startThinking(opt.ms)} style={{ flex: 1, background: t.accentBg, border: `1px solid ${t.border}`, borderRadius: 10, padding: "10px 4px", fontSize: 13, fontWeight: 600, color: t.text, cursor: "pointer" }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setShowCustomTimer(!showCustomTimer)}
+                  style={{ background: "none", border: "none", color: t.subtext, fontSize: 11.5, marginTop: 10, cursor: "pointer", textDecoration: "underline", padding: 0, display: "block" }}
+                >
+                  {s.customTime}
+                </button>
+                {showCustomTimer && (
+                  <div style={{ marginTop: 8 }}>
+                    <input
+                      type="datetime-local"
+                      value={customDateTime}
+                      min={toLocalInputValue(new Date())}
+                      onChange={(e) => {
+                        setCustomDateTime(e.target.value);
+                        setCustomTimeError(false);
+                      }}
+                      style={{ ...inputStyle(t), padding: "9px 10px", fontSize: 14, width: "100%" }}
+                    />
+                    {customTimeError && (
+                      <div style={{ fontSize: 11, color: t.decline, marginTop: 6 }}>{s.customTimeError}</div>
+                    )}
+                    <button
+                      onClick={() => {
+                        const target = new Date(customDateTime);
+                        const ms = target.getTime() - Date.now();
+                        if (!(ms > 0)) {
+                          setCustomTimeError(true);
+                          return;
+                        }
+                        startThinking(ms);
+                        setShowCustomTimer(false);
+                        setCustomTimeError(false);
+                      }}
+                      style={{ ...btnPrimary(t), width: "100%", marginTop: 8, padding: "10px 0", fontSize: 13.5 }}
+                    >
+                      {s.start}
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => setPickingDuration(false)} style={{ background: "none", border: "none", color: t.subtext, fontSize: 13, marginTop: 12, cursor: "pointer" }}>{s.back}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {followupsDue.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={sectionTitle(t)}>{s.followupTitle}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {followupsDue.map((h) => (
+              <div key={h.id} style={{ background: t.card, borderRadius: 14, padding: 14, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+                <div style={{ fontWeight: 600, fontSize: 14.5 }}>{getCategory(categories, h.category, lang).label}</div>
+                <div style={{ fontSize: 12.5, color: t.subtext, marginTop: 2, marginBottom: 10 }}>
+                  {formatMoney(h.price, currency)} · {s.boughtDaysAgo}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => answerFollowup(h, true)} style={{ ...btnPrimary(t), flex: 1, padding: "9px 0", fontSize: 13.5 }}>{s.gladYes}</button>
+                  <button onClick={() => answerFollowup(h, false)} style={{ ...btnDecline(t), flex: 1, padding: "9px 0", fontSize: 13.5 }}>{s.gladNo}</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {pending.length > 0 && (
+        <div>
+          <div style={sectionTitle(t)}>{s.pending} ({pending.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {pending.map((item) => {
+              const ms = item.until - now;
+              const ready = ms <= 0;
+              const hfi = formatHours(item.hours, lang);
+              return (
+                <SwipeRow key={item.id} t={t} s={s} onDelete={() => deletePendingEntry(item.id)} deleteLabel={s.deleteEntry}>
+                  <div style={{ background: t.card, borderRadius: 14, padding: 14, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14.5 }}>{getCategory(categories, item.category, lang).label}</div>
+                        <div style={{ fontSize: 12.5, color: t.subtext, marginTop: 2 }}>
+                          {formatMoney(item.price, item.currency || currency)} · {hfi.big} {hfi.unit}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: ready ? t.accent : t.sage, whiteSpace: "nowrap" }}>{ready ? s.timeUp : timeLeft(ms)}</div>
+                    </div>
+                    {ready && (
+                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                        <button onClick={() => resolvePending(item, "bought_after_thinking")} style={{ ...btnPrimary(t), flex: 1, padding: "9px 0", fontSize: 13.5 }}>{s.willBuy}</button>
+                        <button onClick={() => resolvePending(item, "skipped_after_thinking")} style={{ ...btnDecline(t), flex: 1, padding: "9px 0", fontSize: 13.5 }}>{s.notBuying}</button>
+                      </div>
+                    )}
+                  </div>
+                </SwipeRow>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ================= Stats tab =================
+function StatsTab({ t, s, lang, currency, categories, savedHoursTotal, savedMoneyTotal, savedHoursMonth, spentHoursTotal, spentHoursMonth, history, exportCSV, streaks, undoLast, deleteHistoryEntry, unlockedAchievements, achievementStats }) {
+  const [statsUnit, setStatsUnit] = useState("hours"); // minutes | hours | days
+  const [investRate, setInvestRate] = useState(7);
+  const [investYears, setInvestYears] = useState(10);
+  const [achievementsOpen, setAchievementsOpen] = useState(false);
+  const [investOpen, setInvestOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const stf = formatDuration(savedHoursTotal, statsUnit, lang);
+  const smf = formatDuration(savedHoursMonth, statsUnit, lang);
+  const spf = formatDuration(spentHoursTotal, statsUnit, lang);
+  const spmf = formatDuration(spentHoursMonth, statsUnit, lang);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[
+          { id: "minutes", label: s.unitMinutes },
+          { id: "hours", label: s.unitHours },
+          { id: "days", label: s.unitDays },
+        ].map((u) => (
+          <button
+            key={u.id}
+            onClick={() => setStatsUnit(u.id)}
+            style={{
+              flex: 1,
+              padding: "6px 0",
+              borderRadius: 8,
+              border: statsUnit === u.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`,
+              background: statsUnit === u.id ? t.accentBg : t.card,
+              color: t.text,
+              fontSize: 11.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {u.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ background: t.card, borderRadius: 14, padding: 16, marginBottom: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div style={{ display: "flex", gap: 14 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: t.subtext, fontWeight: 600 }}>{s.spentLabel}</div>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 22, marginTop: 2, color: t.accent }}>
+              {spf.big} <span style={{ fontSize: 12, fontWeight: 500 }}>{spf.unit}</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: t.subtext, marginTop: 2 }}>{spmf.big} {spmf.unit} · {s.savedMonth.toLowerCase()}</div>
+          </div>
+          <div style={{ width: 1, background: t.border }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: t.subtext, fontWeight: 600 }}>{s.notSpentLabel}</div>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 22, marginTop: 2, color: t.sage }}>
+              {stf.big} <span style={{ fontSize: 12, fontWeight: 500 }}>{stf.unit}</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: t.subtext, marginTop: 2 }}>{smf.big} {smf.unit} · {s.savedMonth.toLowerCase()}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${t.border}` }}>
+          <div style={{ fontSize: 11.5, color: t.subtext }}>
+            {s.streakCurrent}: <span style={{ fontWeight: 700, color: t.text }}>{streaks.current} {s.daysUnit}</span>
+          </div>
+          <div style={{ fontSize: 11.5, color: t.subtext }}>
+            {s.streakLongest}: <span style={{ fontWeight: 700, color: t.text }}>{streaks.longest} {s.daysUnit}</span>
+          </div>
+        </div>
+      </div>
+
+      <Fold t={t} title={s.whatIfTitle} isOpen={investOpen} onToggle={() => setInvestOpen(!investOpen)}>
+        <div style={{ fontSize: 11, color: t.subtext, fontStyle: "italic", lineHeight: 1.5, marginBottom: 14 }}>{s.whatIfDisclaimer}</div>
+
+        <div style={{ fontSize: 11.5, color: t.subtext, fontWeight: 600 }}>{s.whatIfCurrentLabel}</div>
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 22, marginBottom: 14 }}>{formatMoney(savedMoneyTotal, currency)}</div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+          {[
+            { id: 3, label: s.rateConservativeLabel },
+            { id: 7, label: s.rateModerateLabel },
+            { id: 10, label: s.rateAggressiveLabel },
+          ].map((r) => (
+            <button
+              key={r.id}
+              onClick={() => setInvestRate(r.id)}
+              style={{
+                flex: 1,
+                padding: "8px 4px",
+                borderRadius: 10,
+                border: investRate === r.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`,
+                background: investRate === r.id ? t.accentBg : t.cardAlt,
+                fontSize: 11,
+                fontWeight: 600,
+                color: t.text,
+                lineHeight: 1.3,
+              }}
+            >
+              {r.label}
+              <div style={{ fontSize: 10, color: t.subtext, fontWeight: 500 }}>~{r.id}%</div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+          {[5, 10, 20].map((y) => (
+            <button
+              key={y}
+              onClick={() => setInvestYears(y)}
+              style={{
+                flex: 1,
+                padding: "7px 0",
+                borderRadius: 8,
+                border: investYears === y ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`,
+                background: investYears === y ? t.accentBg : t.cardAlt,
+                fontSize: 12,
+                fontWeight: 600,
+                color: t.text,
+              }}
+            >
+              {y} {s.yearsUnit}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ background: t.ticket, borderRadius: 12, padding: "14px 16px" }}>
+          <div style={{ fontSize: 12, color: "#F5EFE6", opacity: 0.75 }}>
+            {investYears} {s.yearsUnit} {s.whatIfProjectedLabel}
+          </div>
+          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 26, color: "#F5EFE6", marginTop: 2 }}>
+            {formatMoney(savedMoneyTotal * Math.pow(1 + investRate / 100, investYears), currency)}
+          </div>
+        </div>
+      </Fold>
+
+      <div style={{ marginTop: 14 }}>
+        <Fold t={t} title={s.achievements} subtitle={`(${unlockedAchievements.length}/${ACHIEVEMENTS.length})`} isOpen={achievementsOpen} onToggle={() => setAchievementsOpen(!achievementsOpen)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {ACHIEVEMENTS.map((a) => {
+              const unlocked = unlockedAchievements.includes(a.id);
+              const progress = unlocked ? null : achievementProgress(a, achievementStats);
+              const pct = progress ? Math.min(100, (progress.current / progress.target) * 100) : 0;
+              return (
+                <div
+                  key={a.id}
+                  style={{
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "flex-start",
+                    background: unlocked ? t.accentBg : t.cardAlt,
+                    border: `1px solid ${unlocked ? t.accent : t.border}`,
+                    borderRadius: 12,
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ fontSize: 24, filter: unlocked ? "none" : "grayscale(1)", opacity: unlocked ? 1 : 0.6, lineHeight: 1 }}>{a.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: unlocked ? t.text : t.subtext }}>
+                      {s[a.titleKey]}
+                      {unlocked && <span style={{ color: t.accent }}> ✓</span>}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: t.subtext, marginTop: 2, lineHeight: 1.4 }}>{s[a.descKey]}</div>
+                    {!unlocked && progress && (
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ height: 5, borderRadius: 3, background: t.border, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: t.accent, borderRadius: 3 }} />
+                        </div>
+                        <div style={{ fontSize: 10.5, color: t.subtext, marginTop: 4 }}>
+                          {progress.current} / {progress.target}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Fold>
+      </div>
+
+      {history.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <Fold t={t} title={s.historySection} subtitle={`(${history.length})`} isOpen={historyOpen} onToggle={() => setHistoryOpen(!historyOpen)}>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+              <button onClick={undoLast} style={{ background: "none", border: "none", color: t.accent, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>{s.undo}</button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              {history.slice(0, 40).map((h) => {
+                const positive = DECISION_POSITIVE[h.decision];
+                const hf2 = formatDuration(h.hours, statsUnit, lang);
+                return (
+                  <SwipeRow key={h.id} t={t} s={s} onDelete={() => deleteHistoryEntry(h.id)} deleteLabel={s.deleteEntry}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 2px", borderBottom: `1px solid ${t.border}`, background: t.bg }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{getCategory(categories, h.category, lang).label}</div>
+                        <div style={{ fontSize: 11.5, color: t.subtext }}>
+                          {formatMoney(h.price, h.currency || currency)} · {hf2.big} {hf2.unit}
+                          {h.followup === "glad" && " · 🙂"}
+                          {h.followup === "regret" && " · 😕"}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: positive ? t.accent : t.decline, background: positive ? t.accentBg : t.declineBg, borderRadius: 20, padding: "4px 10px", whiteSpace: "nowrap" }}>
+                        {decisionLabel(h.decision, s)}
+                      </span>
+                    </div>
+                  </SwipeRow>
+                );
+              })}
+            </div>
+            <button onClick={exportCSV} style={{ ...btnSecondary(t), width: "100%", padding: "10px 0", fontSize: 13 }}>{s.exportCSV}</button>
+            <div style={{ fontSize: 10.5, color: t.subtext, marginTop: 6, textAlign: "center" }}>{s.fullBackupHint}</div>
+          </Fold>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ================= Recurring tab =================
+function RecurringTab({ t, s, currency, recurring, setRecurring, rate, recurringMonthlyHours, lang }) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [cycle, setCycle] = useState("month");
+
+  function add() {
+    const p = parseLocaleNumber(price);
+    if (!name.trim() || !(p > 0)) return;
+    setRecurring((r) => [...r, { id: uid(), name: name.trim(), price: p, cycle, currency }]);
+    setName("");
+    setPrice("");
+  }
+  function remove(id) {
+    setRecurring((r) => r.filter((x) => x.id !== id));
+  }
+
+  const totalHf = formatHours(recurringMonthlyHours, lang);
+
+  return (
+    <div>
+      <div style={{ background: `linear-gradient(160deg, ${shade(t.ticket, 8)}, ${t.ticket})`, color: "#F5EFE6", borderRadius: 16, padding: 18, marginBottom: 20, boxShadow: `0 6px 20px ${t.ticket}44` }}>
+        <div style={{ fontSize: 12.5, opacity: 0.7 }}>{s.subsCostMonth}</div>
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 32, marginTop: 4 }}>
+          {totalHf.big} <span style={{ fontSize: 15, fontWeight: 500 }}>{totalHf.unit}</span>
+        </div>
+      </div>
+
+      <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 16, padding: 18, marginBottom: 20 }}>
+        <label style={labelStyle(t)}>{s.name}</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={s.namePlaceholder} style={inputStyle(t)} />
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle(t)}>{s.price}</label>
+            <div style={{ position: "relative" }}>
+              <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" placeholder="0" maxLength={10} style={{ ...inputStyle(t), paddingRight: 40 }} />
+              <span style={{ position: "absolute", right: 12, top: 11, color: t.subtext, fontSize: 13, fontWeight: 600 }}>{CURRENCIES[currency].symbol}</span>
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle(t)}>{s.cycle}</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[{ id: "month", l: s.monthly }, { id: "year", l: s.yearly }].map((o) => (
+                <button key={o.id} onClick={() => setCycle(o.id)} style={{ flex: 1, padding: "10px 4px", borderRadius: 10, border: cycle === o.id ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: cycle === o.id ? t.accentBg : t.cardAlt, fontSize: 12, fontWeight: 600, color: t.text }}>
+                  {o.l}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <button onClick={add} style={{ ...btnPrimary(t), width: "100%", marginTop: 14 }}>{s.addSub}</button>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {recurring.map((r) => {
+          const hours = (r.cycle === "year" ? r.price / 12 : r.price) / rate;
+          const hf = formatHours(hours, lang);
+          return (
+            <div key={r.id} style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
+                <div style={{ fontSize: 12, color: t.subtext, marginTop: 2 }}>
+                  {formatMoney(r.price, r.currency || currency)} {r.cycle === "year" ? s.perYear : s.perMonth} · {hf.big} {hf.unit}{s.perMonth}
+                </div>
+              </div>
+              <button onClick={() => remove(r.id)} style={{ background: "none", border: "none", color: t.subtext, fontSize: 18, cursor: "pointer" }}>✕</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ================= Settings tab =================
+function SettingsTab({ t, s, lang, setLang, themeName, setThemeName, currency, setCurrency, rates, setRates, activeRateId, setActiveRateId, categories, setCategories, notifPerm, requestNotifications, exportJSON, importBackup, importState, resetApp }) {
+  const [newRateLabel, setNewRateLabel] = useState("");
+  const [newRateValue, setNewRateValue] = useState("");
+  const [editRateId, setEditRateId] = useState(null);
+  const [editRateValue, setEditRateValue] = useState("");
+
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [open, setOpen] = useState({});
+  const toggle = (key) => setOpen((o) => ({ ...o, [key]: !o[key] }));
+  const [resetConfirming, setResetConfirming] = useState(false);
+  const [newCatIcon, setNewCatIcon] = useState(ICON_CHOICES[0]);
+
+  function addRate() {
+    const v = parseLocaleNumber(newRateValue);
+    if (!newRateLabel.trim() || !(v > 0)) return;
+    setRates((r) => [...r, { id: uid(), label: newRateLabel.trim(), rate: v }]);
+    setNewRateLabel("");
+    setNewRateValue("");
+  }
+  function removeRate(id) {
+    if (rates.length <= 1) return;
+    setRates((r) => r.filter((x) => x.id !== id));
+    if (activeRateId === id) setActiveRateId(rates.find((r) => r.id !== id).id);
+  }
+  function saveEditRate(id) {
+    const v = parseLocaleNumber(editRateValue);
+    if (v > 0) setRates((r) => r.map((x) => (x.id === id ? { ...x, rate: v } : x)));
+    setEditRateId(null);
+  }
+
+  function addCategory() {
+    if (!newCatLabel.trim()) return;
+    setCategories((c) => [...c, { id: uid(), label: newCatLabel.trim(), icon: newCatIcon, custom: true }]);
+    setNewCatLabel("");
+  }
+  function removeCategory(id) {
+    if (categories.length <= 1) return;
+    setCategories((c) => c.filter((x) => x.id !== id));
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Fold t={t} title={s.language} subtitle={`· ${lang.toUpperCase()}`} isOpen={!!open.language} onToggle={() => toggle("language")}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {["cs", "en", "pl", "es"].map((l) => (
+            <button key={l} onClick={() => setLang(l)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: lang === l ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: lang === l ? t.accentBg : t.card, color: t.text, fontWeight: 700, fontSize: 13 }}>
+              {l.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </Fold>
+
+      <Fold t={t} title={s.appearance} isOpen={!!open.appearance} onToggle={() => toggle("appearance")}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {Object.entries(THEMES).map(([key, th]) => (
+            <button key={key} onClick={() => setThemeName(key)} style={{ flex: "1 1 140px", background: th.card, border: themeName === key ? `2px solid ${th.accent}` : `1px solid ${t.border}`, borderRadius: 14, padding: 12, cursor: "pointer", textAlign: "left" }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: th.ticket }} />
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: th.accent }} />
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: th.sage }} />
+              </div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: th.text }}>{th.name}</div>
+              {themeName === key && <div style={{ fontSize: 10.5, color: th.accent, marginTop: 2, fontWeight: 600 }}>{s.selected}</div>}
+            </button>
+          ))}
+        </div>
+      </Fold>
+
+      <Fold t={t} title={s.currency} subtitle={`· ${currency}`} isOpen={!!open.currency} onToggle={() => toggle("currency")}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {Object.keys(CURRENCIES).map((c) => (
+            <button key={c} onClick={() => setCurrency(c)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: currency === c ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: currency === c ? t.accentBg : t.card, color: t.text, fontWeight: 600, fontSize: 13 }}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: t.subtext, marginTop: 8, lineHeight: 1.5 }}>{s.currencyChangeWarning}</div>
+      </Fold>
+
+      <Fold t={t} title={s.hourlyRates} subtitle={`(${rates.length})`} isOpen={!!open.rates} onToggle={() => toggle("rates")}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+          {rates.map((r) => (
+            <div key={r.id} style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>{rateLabel(r, s)}{activeRateId === r.id ? ` · ${s.active}` : ""}</div>
+                {editRateId === r.id ? (
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <input autoFocus value={editRateValue} onChange={(e) => setEditRateValue(e.target.value)} inputMode="decimal" style={{ width: 70, fontSize: 13, border: `1px solid ${t.border}`, borderRadius: 6, padding: "4px 6px", background: t.cardAlt, color: t.text }} />
+                    <button onClick={() => saveEditRate(r.id)} style={{ background: t.accent, color: t.fillText, border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}>OK</button>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: t.subtext, marginTop: 2 }}>{r.rate.toLocaleString(LOCALES[lang])} {CURRENCIES[currency].symbol}/h</div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {editRateId !== r.id && <button onClick={() => { setEditRateId(r.id); setEditRateValue(String(r.rate)); }} style={{ background: "none", border: "none", color: t.subtext, fontSize: 13, cursor: "pointer" }}>✎</button>}
+                {rates.length > 1 && <button onClick={() => removeRate(r.id)} style={{ background: "none", border: "none", color: t.subtext, fontSize: 16, cursor: "pointer" }}>✕</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 12 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={newRateLabel} onChange={(e) => setNewRateLabel(e.target.value)} placeholder={s.rateNamePlaceholder} style={{ ...inputStyle(t), flex: 1.4, padding: "8px 10px", fontSize: 13 }} />
+            <input value={newRateValue} onChange={(e) => setNewRateValue(e.target.value)} inputMode="decimal" placeholder={s.ratePlaceholder} style={{ ...inputStyle(t), flex: 1, padding: "8px 10px", fontSize: 13 }} />
+          </div>
+          <button onClick={addRate} style={{ ...btnSecondary(t), width: "100%", marginTop: 10, padding: "9px 0", fontSize: 13 }}>{s.addRate}</button>
+        </div>
+        <div style={{ fontSize: 11, color: t.subtext, marginTop: 8, lineHeight: 1.5 }}>{s.quickEntryHint}</div>
+      </Fold>
+
+      <Fold t={t} title={s.categories} subtitle={`(${categories.length})`} isOpen={!!open.categories} onToggle={() => toggle("categories")}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+          {categories.map((c) => {
+            const cat = getCategory(categories, c.id, lang);
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: t.card, border: `1px solid ${t.border}`, borderRadius: 20, padding: "6px 10px 6px 12px" }}>
+                <span style={{ fontSize: 14 }}>{cat.icon}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{cat.label}</span>
+                {categories.length > 1 && <button onClick={() => removeCategory(c.id)} style={{ background: "none", border: "none", color: t.subtext, fontSize: 13, cursor: "pointer", padding: 0 }}>✕</button>}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {ICON_CHOICES.map((ic) => (
+              <button key={ic} onClick={() => setNewCatIcon(ic)} style={{ width: 30, height: 30, borderRadius: 8, border: newCatIcon === ic ? `1.5px solid ${t.accent}` : `1px solid ${t.border}`, background: newCatIcon === ic ? t.accentBg : t.cardAlt, fontSize: 14 }}>
+                {ic}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={newCatLabel} onChange={(e) => setNewCatLabel(e.target.value)} placeholder={s.newCategory} style={{ ...inputStyle(t), flex: 1, padding: "8px 10px", fontSize: 13 }} />
+            <button onClick={addCategory} style={{ ...btnSecondary(t), padding: "0 16px", fontSize: 13 }}>{s.add}</button>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: t.subtext, marginTop: 8, lineHeight: 1.5 }}>{s.categoryDeleteNote}</div>
+      </Fold>
+
+      <Fold t={t} title={s.notifications} isOpen={!!open.notifications} onToggle={() => toggle("notifications")}>
+        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 12.5, color: t.subtext, marginBottom: 10, lineHeight: 1.5 }}>{s.notifDesc}</div>
+          {notifPerm === "granted" ? (
+            <div style={{ fontSize: 13, fontWeight: 600, color: t.sage }}>{s.notifGranted}</div>
+          ) : notifPerm === "unsupported" ? (
+            <div style={{ fontSize: 13, color: t.subtext }}>{s.notifUnsupported}</div>
+          ) : (
+            <button onClick={requestNotifications} style={{ ...btnSecondary(t), width: "100%", padding: "9px 0", fontSize: 13 }}>{s.notifRequest}</button>
+          )}
+        </div>
+      </Fold>
+
+      <Fold t={t} title={s.backup} isOpen={!!open.backup} onToggle={() => toggle("backup")}>
+        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 12.5, color: t.subtext, marginBottom: 12, lineHeight: 1.5 }}>{s.backupDesc}</div>
+          <button onClick={exportJSON} style={{ ...btnSecondary(t), width: "100%", padding: "10px 0", fontSize: 13, marginBottom: 8 }}>
+            {s.backupExport}
+          </button>
+          <label
+            htmlFor="backup-import-input"
+            style={{
+              display: "block",
+              width: "100%",
+              boxSizing: "border-box",
+              textAlign: "center",
+              background: "none",
+              color: t.text,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 12,
+              padding: "9px 0",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {s.backupImport}
+            <input
+              id="backup-import-input"
+              type="file"
+              accept="application/json"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                e.target.value = "";
+                if (f) importBackup(f);
+              }}
+            />
+          </label>
+          {importState === "success" && <div style={{ fontSize: 12, color: t.sage, marginTop: 8 }}>{s.backupImportSuccess}</div>}
+          {importState === "error" && <div style={{ fontSize: 12, color: t.accent, marginTop: 8 }}>{s.backupImportError}</div>}
+        </div>
+      </Fold>
+
+      <Fold t={t} title={s.resetApp} isOpen={!!open.reset} onToggle={() => toggle("reset")}>
+        <div style={{ background: t.card, border: `1px solid ${t.border}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 12.5, color: t.subtext, marginBottom: 10, lineHeight: 1.5 }}>{s.resetDesc}</div>
+          {!resetConfirming ? (
+            <button onClick={() => setResetConfirming(true)} style={{ ...btnGhost(t), width: "100%", padding: "9px 0", fontSize: 13 }}>
+              {s.resetApp}
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={resetApp} style={{ ...btnPrimary(t), flex: 1, padding: "9px 0", fontSize: 13 }}>
+                {s.resetConfirm}
+              </button>
+              <button onClick={() => setResetConfirming(false)} style={{ ...btnSecondary(t), flex: 1, padding: "9px 0", fontSize: 13 }}>
+                {s.resetCancel}
+              </button>
+            </div>
+          )}
+        </div>
+      </Fold>
+    </div>
+  );
+}
+
+const labelStyle = (t) => ({ display: "block", fontSize: 12.5, fontWeight: 600, color: t.subtext, marginBottom: 6 });
+const inputStyle = (t) => ({ width: "100%", boxSizing: "border-box", border: `1px solid ${t.border}`, borderRadius: 10, padding: "11px 13px", fontSize: 15, fontFamily: "'Inter', sans-serif", color: t.text, background: t.cardAlt, outline: "none" });
+const btnPrimary = (t) => ({ background: t.accent, color: t.fillText, border: "none", borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" });
+const btnSecondary = (t) => ({ background: t.accentBg, color: t.text, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" });
+const btnGhost = (t) => ({ background: "none", color: t.decline, border: `1.5px solid ${t.decline}`, borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" });
+const btnThink = (t) => ({ background: t.think, color: t.fillText, border: "none", borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" });
+const btnDecline = (t) => ({ background: t.decline, color: t.fillText, border: "none", borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" });
+const sectionTitle = (t) => ({ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 14.5, color: t.text, marginBottom: 10, letterSpacing: "0.01em" });
+const dotSide = { position: "absolute", top: -8, width: 16, height: 16, borderRadius: "50%" };
+
+function Fold({ t, title, subtitle, isOpen, onToggle, children }) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        style={{ background: "none", border: "none", padding: 0, width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: isOpen ? 10 : 0 }}
+      >
+        <div style={{ ...sectionTitle(t), marginBottom: 0 }}>
+          {title} {subtitle && <span style={{ color: t.subtext, fontWeight: 500 }}>{subtitle}</span>}
+        </div>
+        <span style={{ color: t.subtext, fontSize: 13, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
+      </button>
+      {isOpen && children}
+    </div>
+  );
+}
+
+  ReactDOM.createRoot(document.getElementById("root")).render(<WorkHoursApp />);
+</script>
+</body>
+</html>
