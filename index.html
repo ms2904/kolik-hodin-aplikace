@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0C0E10" />
+<meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'self';" />
+<title>Stop &amp; Think</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body, #root { margin:0; padding:0; height:100%; overflow:hidden; background:#0C0E10; overscroll-behavior:none; }
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+</style>
+
+<!-- React, ReactDOM, and in-browser Babel: no build step by design, matching
+     the rest of this project family. Open index.html (via a local server) and it runs. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // Local storage shim -- window.storage is the same abstraction used when this
+  // app runs inside a Claude.ai artifact preview, so the app code doesn't need
+  // to know or care which environment it's in.
+  window.storage = {
+    get: async (key) => {
+      const v = localStorage.getItem(key);
+      if (v === null) throw new Error("not found");
+      return { key, value: v, shared: false };
+    },
+    set: async (key, value) => {
+      localStorage.setItem(key, value);
+      return { key, value, shared: false };
+    },
+    delete: async (key) => {
+      localStorage.removeItem(key);
+      return { key, deleted: true, shared: false };
+    },
+    list: async (prefix) => {
+      const keys = Object.keys(localStorage).filter((k) => !prefix || k.startsWith(prefix));
+      return { keys, prefix, shared: false };
+    },
+  };
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+
+<script type="text/babel" data-presets="react" src="app.jsx"></script>
+</body>
+</html>
